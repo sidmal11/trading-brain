@@ -3,3 +3,9 @@ python-telegram-bot
 boto3
 groq
 pandas
+langgraph
+langchain
+langchain-openai
+langchain-groq
+langsmith
+python-dotenv
