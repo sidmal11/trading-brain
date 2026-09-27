@@ -1,15 +1,63 @@
-import json
-import os
-import time
+import logging
 import uuid
-from datetime import datetime, timezone
+from utils.api_client import ApiClient
+from utils.llm_client import LlmClient
+from utils.telegram_client import TelegramClient
+from utils.db_client import DbClient
+from config import Config
 
-from utils.api_client import fetch_screener_data, ENDPOINTS as SCREENER_ENDPOINTS
-from utils.llm_client import analyze_with_llm
-from utils.telegram_client import send_trade_alert, button_click_handler, start_telegram_bot # Import start_telegram_bot
-from utils.db_client import save_alert, get_alert_details # Assuming get_alert_details will be implemented later
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-import config
+def lambda_handler(event, context):
+    """Main orchestration function for the Trading Brain."""
+    api = ApiClient()
+    llm = LlmClient()
+    telegram = TelegramClient()
+    db = DbClient()
 
-# Initialize clients (these might need adjustment for Lambda cold starts)
-# For Lambda, it
+    logger.info("Starting market scan poll...")
+    
+    # 1. Fetch scan results
+    scan_results = api.get_market_scan_results()
+    if not scan_results:
+        logger.info("No scan results found.")
+        return {"statusCode": 200, "body": "No signals identified."}
+
+    # 2. Process potential candidates
+    signals_count = 0
+    for result in scan_results[:5]: # Limit to top 5 candidates per run
+        ticker = result.get("ticker")
+        if not ticker: continue
+        
+        # Simple volume breakthrough check (example logic)
+        volume_score = result.get("volume_score", 0)
+        if volume_score < Config.STRATEGY_VOLUME_THRESHOLD:
+            continue
+
+        logger.info(f"Signal detected for {ticker}. Running AI analysis...")
+
+        # 3. Get detailed context for AI
+        stock_data = api.get_stock_details(ticker)
+        
+        # 4. Generate Pros/Cons with LLM
+        signal_desc = f"Volume Breakthrough detected with score {volume_score}"
+        analysis = llm.analyze_stock(ticker, signal_desc, stock_data)
+
+        # 5. Send Telegram Alert
+        message_id = telegram.send_alert(ticker, signal_desc, analysis)
+        
+        # 6. Persist to DynamoDB
+        alert_id = str(uuid.uuid4())
+        db.save_alert(
+            alert_id=alert_id,
+            ticker=ticker,
+            signal_details=signal_desc,
+            pros_cons=analysis,
+            chat_id=Config.TELEGRAM_CHAT_ID,
+            message_id=str(message_id) if message_id else None
+        )
+        signals_count += 1
+
+    logger.info(f"Completed run. Processed {signals_count} signals.")
+    return {"statusCode": 200, "body": f"Processed {signals_count} signals."}
