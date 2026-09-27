@@ -1,5 +1,6 @@
 import logging
 from groq import Groq
+from langsmith import traceable
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -8,6 +9,7 @@ class LlmClient:
     def __init__(self):
         self.client = Groq(api_key=Config.GROQ_API_KEY)
 
+    @traceable(run_type="llm")
     def analyze_stock(self, ticker, signal_details, stock_data):
         """Generates a Pros/Cons summary for a trade setup."""
         prompt = (
