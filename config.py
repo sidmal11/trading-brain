@@ -14,3 +14,7 @@ class Config:
     # Frequency and strategy settings
     POLLING_INTERVAL_MINUTES = int(os.environ.get("POLLING_INTERVAL_MINUTES", 15))
     STRATEGY_VOLUME_THRESHOLD = float(os.environ.get("STRATEGY_VOLUME_THRESHOLD", 3.0)) # 300%
+
+    # Feature flags
+    FEATURE_MULTI_AGENT_MODE = os.environ.get("FEATURE_MULTI_AGENT_MODE", "false").lower() == "true"
+    FEATURE_UI_DASHBOARD = os.environ.get("FEATURE_UI_DASHBOARD", "false").lower() == "true"

@@ -5,12 +5,19 @@ from utils.llm_client import LlmClient
 from utils.telegram_client import TelegramClient
 from utils.db_client import DbClient
 from config import Config
+from graph import run_workflow
+from utils.langgraph_state import TradingBrainState
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def lambda_handler(event, context):
     """Main orchestration function for the Trading Brain."""
+    if Config.FEATURE_MULTI_AGENT_MODE:
+        run_workflow(TradingBrainState())
+        logger.info("Multi-agent workflow completed.")
+        return {"statusCode": 200, "body": "Multi-agent workflow completed."}
+
     api = ApiClient()
     llm = LlmClient()
     telegram = TelegramClient()
