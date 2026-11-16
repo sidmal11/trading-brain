@@ -1,6 +1,6 @@
 """Run the poll handler on a timer. Replaces the EventBridge schedule off AWS.
 
-    python scripts/run_poll.py            # every POLLING_INTERVAL_MINUTES (default 15)
+    python scripts/run_poll.py            # every POLLING_INTERVAL_MINUTES (default 5)
     python scripts/run_poll.py --once     # one run, then exit (useful from cron)
 
 A failed run is logged and the loop continues, so one bad scan does not stop

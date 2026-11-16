@@ -1,7 +1,13 @@
-# Local or single-host run: `docker compose up -d --build`.
-# Both services share one SQLite file in ./data. Secrets come from .env here;
-# on a real host, supply them from the host's secret store instead.
-x-common: &common
+# Single-host deployment: `docker compose up -d --build`.
+#
+# Services:
+#   caddy  - public HTTPS on 80/443 for DOMAIN; serves the dashboard and proxies /api
+#   api    - the read API and Telegram webhook, internal only
+#   poll   - the market scan loop (every POLLING_INTERVAL_MINUTES, default 5)
+#
+# Secrets come from .env, which must be readable only by its owner: chmod 600 .env
+# Both app services share one SQLite file in ./data.
+x-app: &app
   build: .
   env_file: .env
   environment:
@@ -13,11 +19,28 @@ x-common: &common
 
 services:
   api:
-    <<: *common
-    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    ports:
-      - "127.0.0.1:8000:8000"
+    <<: *app
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
 
   poll:
-    <<: *common
+    <<: *app
     command: ["python", "scripts/run_poll.py"]
+
+  caddy:
+    image: caddy:2
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./frontend-dist:/srv/dashboard:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

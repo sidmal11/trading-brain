@@ -19,7 +19,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Path, Query, status
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
@@ -30,7 +30,7 @@ from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import TelegramClient, parse_callback
 
 from . import market_source
-from .auth import auth_required, require_user
+from .auth import auth_required, email_otp_enabled, get_otp_service, require_user
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +273,56 @@ def review_alert(
     return {"success": True, "alertId": alert_id, "status": body.decision}
 
 
+# ── Email login (AUTH_MODE=email_otp) ─────────────────────────────────────────
+# No require_user here: these routes are how a session is created.
+
+class OtpRequest(BaseModel):
+    email: str
+
+
+class OtpVerify(BaseModel):
+    email: str
+    code: str
+
+
+auth_router = APIRouter(prefix="/api/auth")
+
+
+@auth_router.post("/otp/request")
+def otp_request(body: OtpRequest):
+    if not email_otp_enabled():
+        raise HTTPException(status_code=404, detail="Not found.")
+    get_otp_service().request_code(body.email)
+    # Same answer whether or not the address is allowed.
+    return {"ok": True}
+
+
+@auth_router.post("/otp/verify")
+def otp_verify(body: OtpVerify, response: Response):
+    from .email_otp import COOKIE_NAME, SESSION_TTL_SECONDS
+
+    if not email_otp_enabled():
+        raise HTTPException(status_code=404, detail="Not found.")
+    token = get_otp_service().verify_code(body.email, body.code)
+    if token is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired code.")
+    response.set_cookie(
+        COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS, httponly=True,
+        secure=Config.COOKIE_SECURE, samesite="strict", path="/",
+    )
+    return {"ok": True}
+
+
+@auth_router.post("/logout")
+def logout(request: Request, response: Response):
+    from .email_otp import COOKIE_NAME
+
+    if email_otp_enabled():
+        get_otp_service().end_session(request.cookies.get(COOKIE_NAME, ""))
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
 # ── Telegram webhook ──────────────────────────────────────────────────────────
 # Outside `router` because Telegram cannot present a Cognito token. It is
 # authenticated instead by the shared secret configured on setWebhook.
@@ -371,6 +421,14 @@ def _handle_command(message, subscribers):
 # ── Application ───────────────────────────────────────────────────────────────
 
 def create_app() -> FastAPI:
+    # Refuse to start with email login half-configured: a missing secret or an
+    # empty allow-list would leave the dashboard open or unable to sign anyone in.
+    if email_otp_enabled():
+        if not Config.SESSION_SECRET or len(Config.SESSION_SECRET) < 32:
+            raise RuntimeError("AUTH_MODE=email_otp needs SESSION_SECRET of at least 32 characters.")
+        if not Config.ALLOWED_EMAILS.strip():
+            raise RuntimeError("AUTH_MODE=email_otp needs ALLOWED_EMAILS.")
+
     app = FastAPI(
         title="Trading Brain API",
         description="Serves breakout signals, futures, market overview and the approval queue.",
@@ -390,6 +448,7 @@ def create_app() -> FastAPI:
     def health():
         return {"status": "ok", "authEnforced": auth_required()}
 
+    app.include_router(auth_router)
     app.include_router(router)
     app.include_router(webhook_router)
 

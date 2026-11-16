@@ -106,8 +106,23 @@ class Config:
     STORAGE_BACKEND = _get("STORAGE_BACKEND", "dynamodb").lower()
     SQLITE_PATH = _get("SQLITE_PATH", "trading_brain.db")
 
+    # Read-API login. "email_otp" for a host without AWS; "cognito" or unset otherwise.
+    AUTH_MODE = _get("AUTH_MODE", "").lower()
+    ALLOWED_EMAILS = _get("ALLOWED_EMAILS", "")
+    # Signs login codes. Required when AUTH_MODE=email_otp; generate with `openssl rand -hex 32`.
+    SESSION_SECRET = _get("SESSION_SECRET", "")
+    SMTP_HOST = _get("SMTP_HOST", "")
+    SMTP_PORT = int(_get("SMTP_PORT", "587"))
+    SMTP_USER = _get("SMTP_USER", "")
+    SMTP_PASSWORD = _get("SMTP_PASSWORD", "")
+    SMTP_FROM = _get("SMTP_FROM", "Trading Brain <no-reply@localhost>")
+    # Local only: log login codes instead of emailing them when SMTP_HOST is unset.
+    OTP_DEV_PRINT = _get("OTP_DEV_PRINT", "false").lower() == "true"
+    # Session cookie Secure flag. Keep true behind HTTPS; false only for plain-http local runs.
+    COOKIE_SECURE = _get("COOKIE_SECURE", "true").lower() == "true"
+
     # Frequency and strategy settings
-    POLLING_INTERVAL_MINUTES = int(_get("POLLING_INTERVAL_MINUTES", "15"))
+    POLLING_INTERVAL_MINUTES = int(_get("POLLING_INTERVAL_MINUTES", "5"))
     STRATEGY_VOLUME_THRESHOLD = float(_get("STRATEGY_VOLUME_THRESHOLD", "3.0"))  # 300%
 
     # Comma-separated list of origins allowed to call the read API. The

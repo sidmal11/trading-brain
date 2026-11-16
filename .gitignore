@@ -8,3 +8,4 @@ infrastructure/*.tfstate
 infrastructure/*.tfstate.*
 *.log
 data/
+frontend-dist/

@@ -15,6 +15,7 @@ import logging
 import os
 import time
 
+from config import Config
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -36,7 +37,23 @@ _bearer = HTTPBearer(auto_error=False)
 
 
 def auth_required() -> bool:
-    return bool(COGNITO_USER_POOL_ID)
+    return bool(COGNITO_USER_POOL_ID) or email_otp_enabled()
+
+
+def email_otp_enabled() -> bool:
+    return Config.AUTH_MODE == "email_otp"
+
+
+_otp_service = None
+
+
+def get_otp_service():
+    """The email-login service, built on first use so importing this module needs no database."""
+    global _otp_service
+    if _otp_service is None:
+        from .email_otp import EmailOtpService, OtpStore
+        _otp_service = EmailOtpService(OtpStore(Config.SQLITE_PATH))
+    return _otp_service
 
 
 def _issuer() -> str:
@@ -121,6 +138,15 @@ async def require_user(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ):
     """FastAPI dependency guarding every data route."""
+    if email_otp_enabled():
+        from .email_otp import COOKIE_NAME
+
+        email = get_otp_service().session_email(request.cookies.get(COOKIE_NAME, ""))
+        if not email:
+            raise _unauthorized("Not signed in.")
+        request.state.user = {"sub": email, "email": email}
+        return request.state.user
+
     if not auth_required():
         return {"sub": "local-development", "unverified": True}
 
