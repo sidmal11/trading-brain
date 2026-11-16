@@ -357,6 +357,19 @@ def otp_verify(body: OtpVerify, response: Response):
     return {"ok": True}
 
 
+@auth_router.get("/me")
+def me(request: Request):
+    """Who the session cookie belongs to. 401 when signed out, so the dashboard shows sign-in."""
+    from .email_otp import COOKIE_NAME
+
+    if not email_otp_enabled():
+        raise HTTPException(status_code=404, detail="Not found.")
+    email = get_otp_service().session_email(request.cookies.get(COOKIE_NAME, ""))
+    if not email:
+        raise HTTPException(status_code=401, detail="Not signed in.")
+    return {"email": email}
+
+
 @auth_router.post("/logout")
 def logout(request: Request, response: Response):
     from .email_otp import COOKIE_NAME

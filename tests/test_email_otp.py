@@ -167,3 +167,9 @@ def test_auth_routes_are_404_when_email_login_is_off(env, monkeypatch):
     monkeypatch.setattr(Config, "AUTH_MODE", "")
     r = env["client"].post("/api/auth/otp/request", json={"email": ALLOWED})
     assert r.status_code == 404
+
+
+def test_me_reports_the_signed_in_email(env):
+    assert env["client"].get("/api/auth/me").status_code == 401
+    _login(env)
+    assert env["client"].get("/api/auth/me").json() == {"email": ALLOWED}
