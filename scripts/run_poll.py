@@ -21,8 +21,8 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from config import Config  # noqa: E402
 from lambda_function import lambda_handler  # noqa: E402
+from utils.settings_store import effective_settings  # noqa: E402
 
 logger = logging.getLogger("run_poll")
 _stop = False
@@ -55,11 +55,12 @@ def main():
         run_once()
         return
 
-    interval = max(1, Config.POLLING_INTERVAL_MINUTES) * 60
-    logger.info("Polling every %s minute(s). Ctrl-C to stop.", interval // 60)
+    logger.info("Polling every interval set in settings. Ctrl-C to stop.")
     while not _stop:
         run_once()
-        # Sleep in short steps so a stop request is honoured quickly.
+        # Read the interval after each run, so a change in the dashboard applies
+        # without a restart. Sleep in short steps so a stop request is honoured quickly.
+        interval = effective_settings()["pollIntervalMinutes"] * 60
         slept = 0
         while slept < interval and not _stop:
             time.sleep(1)

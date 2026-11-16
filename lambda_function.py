@@ -4,6 +4,7 @@ from utils.api_client import ApiClient
 from utils.llm_client import LlmClient
 from utils.telegram_client import TelegramClient
 from utils.storage import alert_store, subscriber_store
+from utils.settings_store import MARKET_US_STOCKS, effective_settings
 from config import Config
 from graph import run_workflow
 from utils.langgraph_state import TradingBrainState
@@ -24,6 +25,11 @@ def lambda_handler(event, context):
     subscribers = subscriber_store()
     db = alert_store()
 
+    settings = effective_settings()
+    if MARKET_US_STOCKS not in settings["markets"]:
+        logger.info("US stocks are not enabled in settings; skipping scan.")
+        return {"statusCode": 200, "body": "US stocks disabled in settings."}
+
     logger.info("Starting market scan poll...")
     
     # 1. Fetch scan results
@@ -34,13 +40,13 @@ def lambda_handler(event, context):
 
     # 2. Process potential candidates
     signals_count = 0
-    for result in scan_results[:5]: # Limit to top 5 candidates per run
+    for result in scan_results[:settings["maxCandidatesPerRun"]]:
         ticker = result.get("ticker")
         if not ticker: continue
         
         # Simple volume breakthrough check (example logic)
         volume_score = result.get("volume_score", 0)
-        if volume_score < Config.STRATEGY_VOLUME_THRESHOLD:
+        if volume_score < settings["volumeThreshold"]:
             continue
 
         logger.info(f"Signal detected for {ticker}. Running AI analysis...")
@@ -59,10 +65,13 @@ def lambda_handler(event, context):
         alert_id = str(uuid.uuid4())
         # Admins always get the alert (with buttons); every active subscriber gets
         # it too. Admins come first so the stored message id is the admin copy.
-        recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + subscribers.active_chat_ids()))
-        message_id, blocked = telegram.broadcast_alert(ticker, signal_desc, analysis, alert_id, recipients)
-        for chat_id in blocked:
-            subscribers.deactivate(chat_id)
+        message_id = None
+        if settings["telegramAlertsEnabled"]:
+            recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + subscribers.active_chat_ids()))
+            message_id, blocked = telegram.broadcast_alert(ticker, signal_desc, analysis, alert_id, recipients)
+            for chat_id in blocked:
+                subscribers.deactivate(chat_id)
+        # With Telegram off the alert is still stored, so the dashboard queue keeps it.
 
         # 6. Persist to DynamoDB
         db.save_alert(

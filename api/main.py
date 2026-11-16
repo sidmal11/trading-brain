@@ -21,7 +21,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, field_validator
+from typing import List, Literal
+
+from pydantic import BaseModel, Field, field_validator
 
 from config import Config
 from utils import news_client
@@ -70,6 +72,23 @@ class ReviewRequest(BaseModel):
         if normalised not in VALID_STATUSES:
             raise ValueError(f"decision must be one of {sorted(VALID_STATUSES)}")
         return normalised
+
+
+class SettingsIn(BaseModel):
+    """Every value is range-checked here, before anything is stored."""
+
+    pollIntervalMinutes: int = Field(ge=1, le=60)
+    volumeThreshold: float = Field(ge=0.5, le=10.0)
+    maxCandidatesPerRun: int = Field(ge=1, le=20)
+    telegramAlertsEnabled: bool
+    markets: List[Literal["us_stocks", "futures", "options"]] = Field(min_length=1)
+
+    @field_validator("markets")
+    @classmethod
+    def no_duplicate_markets(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("markets must not repeat")
+        return value
 
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
@@ -192,6 +211,31 @@ def _safe(worker):
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_user)])
+
+
+@router.get("/settings")
+def get_settings():
+    from utils.settings_store import ALL_MARKETS, SCANNED_MARKETS, effective_settings, settings_store
+
+    return {
+        **effective_settings(),
+        "persistent": settings_store() is not None,
+        "marketsAvailable": list(ALL_MARKETS),
+        "marketsScanned": list(SCANNED_MARKETS),
+    }
+
+
+@router.put("/settings")
+def put_settings(body: SettingsIn):
+    from utils.settings_store import settings_store
+
+    store = settings_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Settings can only be saved with the SQLite storage backend.",
+        )
+    return store.put(body.model_dump())
 
 
 @router.get("/signals")
@@ -440,7 +484,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
