@@ -1,0 +1,4 @@
+# Test-only dependencies. Runtime deps are in requirements.txt.
+-r requirements.txt
+pytest
+moto[dynamodb]
