@@ -1,0 +1,23 @@
+# Local or single-host run: `docker compose up -d --build`.
+# Both services share one SQLite file in ./data. Secrets come from .env here;
+# on a real host, supply them from the host's secret store instead.
+x-common: &common
+  build: .
+  env_file: .env
+  environment:
+    STORAGE_BACKEND: sqlite
+    SQLITE_PATH: /data/trading_brain.db
+  volumes:
+    - ./data:/data
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *common
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  poll:
+    <<: *common
+    command: ["python", "scripts/run_poll.py"]

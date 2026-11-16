@@ -7,3 +7,4 @@ infrastructure/.terraform/
 infrastructure/*.tfstate
 infrastructure/*.tfstate.*
 *.log
+data/

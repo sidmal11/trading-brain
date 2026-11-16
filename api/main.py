@@ -26,7 +26,7 @@ from pydantic import BaseModel, field_validator
 from config import Config
 from utils import news_client
 from utils.db_client import VALID_STATUSES, DbClient
-from utils.subscriber_store import SubscriberStore
+from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import TelegramClient, parse_callback
 
 from . import market_source
@@ -85,7 +85,7 @@ def get_db():
     """
     global _db_client
     if _db_client is None:
-        _db_client = DbClient()
+        _db_client = alert_store()
     return _db_client
 
 
@@ -96,7 +96,7 @@ def get_subscribers():
     """Lazily construct the subscriber store, for the same reason as get_db."""
     global _subscriber_store
     if _subscriber_store is None:
-        _subscriber_store = SubscriberStore()
+        _subscriber_store = subscriber_store()
     return _subscriber_store
 
 

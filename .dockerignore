@@ -1,0 +1,11 @@
+.env
+.git
+.venv
+__pycache__
+.pytest_cache
+tests
+backlog
+infrastructure/.terraform
+infrastructure/*.tfstate*
+*.db
+*.log

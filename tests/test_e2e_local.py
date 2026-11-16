@@ -7,6 +7,7 @@ docs/USE_CASES.md (UC-numbers in the names).
 Run:  python -m pytest tests/test_e2e_local.py -v
 """
 
+import contextlib
 import sys
 import uuid
 from pathlib import Path
@@ -21,8 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from api import main as api_main  # noqa: E402
 from config import Config  # noqa: E402
 from utils import telegram_client as tc  # noqa: E402
-from utils.db_client import DbClient  # noqa: E402
-from utils.subscriber_store import SubscriberStore  # noqa: E402
+from utils.storage import alert_store, subscriber_store  # noqa: E402
 
 ADMIN = "1000"
 SUB = "2000"
@@ -63,20 +63,26 @@ class FakeTelegramHTTP:
         return [p for m, p in self.calls if m == "sendMessage" and str(p.get("chat_id")) == str(chat_id)]
 
 
-@pytest.fixture
-def world(monkeypatch):
-    """Mocked AWS, configured bot, recorded Telegram HTTP, and a running webhook app."""
+@pytest.fixture(params=["dynamodb", "sqlite"])
+def world(request, monkeypatch, tmp_path):
+    """Every use-case test runs once per storage backend, against the same behaviour."""
+    backend = request.param
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
-    with mock_aws():
-        ddb = boto3.resource("dynamodb", region_name="us-east-1")
-        ddb.create_table(TableName="TradingAlerts", KeySchema=[{"AttributeName": "alertId", "KeyType": "HASH"}],
-                         AttributeDefinitions=[{"AttributeName": "alertId", "AttributeType": "S"}],
-                         BillingMode="PAY_PER_REQUEST")
-        ddb.create_table(TableName="TelegramSubscribers", KeySchema=[{"AttributeName": "chatId", "KeyType": "HASH"}],
-                         AttributeDefinitions=[{"AttributeName": "chatId", "AttributeType": "S"}],
-                         BillingMode="PAY_PER_REQUEST")
+    monkeypatch.setattr(Config, "STORAGE_BACKEND", backend)
+    monkeypatch.setattr(Config, "SQLITE_PATH", str(tmp_path / "trading.db"))
+
+    ctx = mock_aws() if backend == "dynamodb" else contextlib.nullcontext()
+    with ctx:
+        if backend == "dynamodb":
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            ddb.create_table(TableName="TradingAlerts", KeySchema=[{"AttributeName": "alertId", "KeyType": "HASH"}],
+                             AttributeDefinitions=[{"AttributeName": "alertId", "AttributeType": "S"}],
+                             BillingMode="PAY_PER_REQUEST")
+            ddb.create_table(TableName="TelegramSubscribers", KeySchema=[{"AttributeName": "chatId", "KeyType": "HASH"}],
+                             AttributeDefinitions=[{"AttributeName": "chatId", "AttributeType": "S"}],
+                             BillingMode="PAY_PER_REQUEST")
 
         monkeypatch.setattr(Config, "TELEGRAM_BOT_TOKEN", "123:fake")
         monkeypatch.setattr(Config, "TELEGRAM_CHAT_ID", ADMIN)
@@ -90,7 +96,8 @@ def world(monkeypatch):
         http = FakeTelegramHTTP()
         monkeypatch.setattr(tc.requests, "post", http)
 
-        yield {"http": http, "client": TestClient(api_main.create_app()), "db": DbClient(), "subs": SubscriberStore()}
+        yield {"http": http, "client": TestClient(api_main.create_app()),
+               "db": alert_store(), "subs": subscriber_store(), "backend": backend}
 
 
 def _message(text, chat_id, chat_type="private"):

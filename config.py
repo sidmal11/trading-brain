@@ -102,6 +102,10 @@ class Config:
 
     DYNAMODB_TABLE_NAME = _get("DYNAMODB_TABLE_NAME", "TradingAlerts")
 
+    # "dynamodb" (AWS, default) or "sqlite" (single file, no AWS).
+    STORAGE_BACKEND = _get("STORAGE_BACKEND", "dynamodb").lower()
+    SQLITE_PATH = _get("SQLITE_PATH", "trading_brain.db")
+
     # Frequency and strategy settings
     POLLING_INTERVAL_MINUTES = int(_get("POLLING_INTERVAL_MINUTES", "15"))
     STRATEGY_VOLUME_THRESHOLD = float(_get("STRATEGY_VOLUME_THRESHOLD", "3.0"))  # 300%

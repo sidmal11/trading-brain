@@ -3,8 +3,7 @@ import uuid
 from utils.api_client import ApiClient
 from utils.llm_client import LlmClient
 from utils.telegram_client import TelegramClient
-from utils.subscriber_store import SubscriberStore
-from utils.db_client import DbClient
+from utils.storage import alert_store, subscriber_store
 from config import Config
 from graph import run_workflow
 from utils.langgraph_state import TradingBrainState
@@ -22,8 +21,8 @@ def lambda_handler(event, context):
     api = ApiClient()
     llm = LlmClient()
     telegram = TelegramClient()
-    subscribers = SubscriberStore()
-    db = DbClient()
+    subscribers = subscriber_store()
+    db = alert_store()
 
     logger.info("Starting market scan poll...")
     
