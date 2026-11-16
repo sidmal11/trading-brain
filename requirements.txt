@@ -1,11 +1,27 @@
+# ── Core runtime ──────────────────────────────────────────────────────────────
 requests
-python-telegram-bot
 boto3
-groq
+
+# ── Market data ───────────────────────────────────────────────────────────────
+# Imported by utils/intelligence_client.py. Previously absent, which broke both
+# test collection and the packaged Lambda at import time.
+yfinance
 pandas
+
+# ── LLM / orchestration ───────────────────────────────────────────────────────
+groq
 langgraph
 langchain
 langchain-openai
 langchain-groq
 langsmith
+
+# ── Read API (serves the dashboard) ───────────────────────────────────────────
+fastapi
+uvicorn[standard]
+# Adapts the ASGI app to a Lambda handler behind API Gateway.
+mangum
+# Verifies Cognito-issued JWTs on the read API; the crypto extra supplies RS256.
+pyjwt[crypto]
+
 python-dotenv

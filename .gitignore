@@ -1,7 +1,9 @@
-trading_brain/
-.venv/
+.env
 __pycache__/
 *.pyc
-.env
-.DS_Store
-.terraform/
+.pytest_cache/
+.venv/
+infrastructure/.terraform/
+infrastructure/*.tfstate
+infrastructure/*.tfstate.*
+*.log

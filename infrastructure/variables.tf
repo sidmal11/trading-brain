@@ -77,3 +77,82 @@ variable "lambda_vpc_ids" {
   type        = list(string)
   default     = []
 }
+
+# ── Lambda deployment ─────────────────────────────────────────────────────────
+
+variable "lambda_package_path" {
+  description = <<-EOT
+    Path to the zip produced by scripts/package_lambda.sh. Relative paths are
+    resolved from the infrastructure/ directory; absolute paths work too.
+    Run the script before `terraform apply` — plan will error clearly if the
+    file is absent.
+  EOT
+  type    = string
+  default = "lambda/poll_handler.zip"
+}
+
+variable "lambda_runtime" {
+  description = "Python runtime identifier for the poll handler Lambda."
+  type        = string
+  default     = "python3.12"
+}
+
+variable "lambda_memory_mb" {
+  description = <<-EOT
+    Memory allocated to the poll handler in MB. The LangGraph + Groq path
+    loads several large libraries; 512 MB is the comfortable floor. Raise to
+    1024 MB if you observe OOM kills in CloudWatch.
+  EOT
+  type    = number
+  default = 512
+
+  validation {
+    condition     = var.lambda_memory_mb >= 128 && var.lambda_memory_mb <= 10240
+    error_message = "lambda_memory_mb must be between 128 and 10240 (Lambda limits)."
+  }
+}
+
+variable "lambda_timeout_seconds" {
+  description = <<-EOT
+    Maximum execution time in seconds. One poll run fetches screener data,
+    calls the Groq API for each candidate, and writes to DynamoDB; 300 s
+    (5 min) gives comfortable headroom even when Groq is slow. Must be less
+    than the EventBridge interval so invocations never overlap.
+  EOT
+  type    = number
+  default = 300
+
+  validation {
+    condition     = var.lambda_timeout_seconds > 0 && var.lambda_timeout_seconds <= 900
+    error_message = "lambda_timeout_seconds must be between 1 and 900 (Lambda limit)."
+  }
+}
+
+# ── EventBridge schedule ──────────────────────────────────────────────────────
+
+variable "schedule_expression" {
+  description = <<-EOT
+    EventBridge schedule expression controlling how often the poll handler
+    fires. Accepts either rate() or cron() syntax.
+    Examples:
+      "rate(15 minutes)"  — every 15 minutes (default, spec lower bound)
+      "rate(30 minutes)"  — every 30 minutes (spec upper bound)
+      "cron(0/15 13-21 ? * MON-FRI *)"  — every 15 min during US market hours only
+  EOT
+  type    = string
+  default = "rate(15 minutes)"
+}
+
+# ── Strategy knobs ────────────────────────────────────────────────────────────
+
+variable "polling_interval_minutes" {
+  description = "Passed to the Lambda as POLLING_INTERVAL_MINUTES. Should match the EventBridge rate."
+  type        = number
+  default     = 15
+}
+
+variable "strategy_volume_threshold" {
+  description = "Minimum volume score multiplier to treat a result as a signal (e.g. 3.0 = 300% of average volume)."
+  type        = number
+  default     = 3.0
+}

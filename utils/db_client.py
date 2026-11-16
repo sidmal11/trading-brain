@@ -58,6 +58,38 @@ class DbClient:
             logger.error(f"Failed to save alert {alert_id}: {e}")
             return False
 
+    def list_alerts(self, limit=200):
+        """Return stored alerts, newest first.
+
+        The table is keyed only by `alertId`, so there is no key condition that
+        selects "all alerts" and this has to scan. That is acceptable at the
+        volume this table sees (a handful of rows per poll, capped at five), but
+        it is the reason `limit` exists: an unbounded scan on a table that has
+        been running for months would page forever behind the dashboard.
+
+        Sorting is done here rather than in DynamoDB because a scan returns
+        items in no meaningful order. Rows with no timestamp sort last instead
+        of raising, since a legacy row without one is still worth showing.
+        """
+        try:
+            response = self.table.scan(Limit=limit)
+        except ClientError as e:
+            logger.error(f"Failed to list alerts: {e}")
+            return []
+
+        items = response.get('Items', [])
+        return sorted(items, key=lambda item: item.get('timestamp') or '', reverse=True)
+
+    def get_alert(self, alert_id):
+        """Return a single alert, or None if the id is not in the table."""
+        try:
+            response = self.table.get_item(Key={'alertId': alert_id})
+        except ClientError as e:
+            logger.error(f"Failed to fetch alert {alert_id}: {e}")
+            return None
+
+        return response.get('Item')
+
     def update_alert_status(self, alert_id, status):
         """Records a review decision, stamping when it was made.
 

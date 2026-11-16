@@ -3,6 +3,7 @@ import uuid
 from utils.api_client import ApiClient
 from utils.llm_client import LlmClient
 from utils.telegram_client import TelegramClient
+from utils.subscriber_store import SubscriberStore
 from utils.db_client import DbClient
 from config import Config
 from graph import run_workflow
@@ -21,6 +22,7 @@ def lambda_handler(event, context):
     api = ApiClient()
     llm = LlmClient()
     telegram = TelegramClient()
+    subscribers = SubscriberStore()
     db = DbClient()
 
     logger.info("Starting market scan poll...")
@@ -52,16 +54,24 @@ def lambda_handler(event, context):
         analysis = llm.analyze_stock(ticker, signal_desc, stock_data)
 
         # 5. Send Telegram Alert
-        message_id = telegram.send_alert(ticker, signal_desc, analysis)
-        
-        # 6. Persist to DynamoDB
+        # The id is minted before the send, not after: it rides along in the
+        # buttons' callback_data, and a tap that carries no id cannot be matched
+        # back to a row when the decision comes in.
         alert_id = str(uuid.uuid4())
+        # Admins always get the alert (with buttons); every active subscriber gets
+        # it too. Admins come first so the stored message id is the admin copy.
+        recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + subscribers.active_chat_ids()))
+        message_id, blocked = telegram.broadcast_alert(ticker, signal_desc, analysis, alert_id, recipients)
+        for chat_id in blocked:
+            subscribers.deactivate(chat_id)
+
+        # 6. Persist to DynamoDB
         db.save_alert(
             alert_id=alert_id,
             ticker=ticker,
             signal_details=signal_desc,
             pros_cons=analysis,
-            chat_id=Config.TELEGRAM_CHAT_ID,
+            chat_id=Config.TELEGRAM_CHAT_ID or next(iter(sorted(telegram.admin_chat_ids)), None),
             message_id=str(message_id) if message_id else None
         )
         signals_count += 1

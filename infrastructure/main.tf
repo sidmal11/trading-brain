@@ -8,8 +8,10 @@ resource "aws_dynamodb_table" "trading_alerts" {
     type = "S"
   }
 
-  # The Lambda reads and writes alerts only; it never needs to scan the table,
-  # so there is deliberately no range key and no GSI.
+  # No range key and no GSI: the poll handler reads and writes single alerts by
+  # id, and the read API lists the queue with a bounded Scan. If the table ever
+  # grows past a few thousand rows, add a GSI on status so the approval queue
+  # can be queried instead of scanned.
   point_in_time_recovery {
     enabled = true
   }
@@ -20,6 +22,32 @@ resource "aws_dynamodb_table" "trading_alerts" {
 
   tags = {
     Name        = var.table_name
+    Project     = "trading-brain"
+    ManagedBy   = "terraform"
+    Environment = var.environment
+  }
+}
+
+resource "aws_dynamodb_table" "telegram_subscribers" {
+  name         = "${var.table_name}-telegram-subscribers"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "chatId"
+
+  attribute {
+    name = "chatId"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Name        = "${var.table_name}-telegram-subscribers"
     Project     = "trading-brain"
     ManagedBy   = "terraform"
     Environment = var.environment
@@ -59,9 +87,27 @@ data "aws_iam_policy_document" "lambda_permissions" {
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
       "dynamodb:Query",
+      # The read API lists the approval queue. The table is keyed only by
+      # alertId, so there is no key condition that selects every alert and
+      # Query cannot express the listing; see DbClient.list_alerts.
+      "dynamodb:Scan",
     ]
 
     resources = [aws_dynamodb_table.trading_alerts.arn]
+  }
+
+  statement {
+    sid    = "ManageTelegramSubscribers"
+    effect = "Allow"
+
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:Scan",
+    ]
+
+    resources = [aws_dynamodb_table.telegram_subscribers.arn]
   }
 
   statement {

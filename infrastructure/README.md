@@ -6,9 +6,12 @@ This directory contains the Terraform configuration to provision the AWS infrast
 
 This infrastructure sets up the following resources:
 
-- **DynamoDB**: A table named `TradingAlerts` to store trade alerts and their status.
-- **IAM Role**: A role for the Lambda function with permissions to access DynamoDB and log to CloudWatch.
-- **Secrets Manager**: A secret store for API keys (Groq, Telegram, Stock Screener, LangSmith) and configuration.
+- **DynamoDB** (`main.tf`): A table named `TradingAlerts` to store trade alerts and their status.
+- **IAM Role** (`main.tf`): A role for the Lambda function with permissions to access DynamoDB, Secrets Manager, and CloudWatch.
+- **Secrets Manager** (`main.tf`): A secret store for API keys (Groq, Telegram, Stock Screener, LangSmith) and configuration.
+- **Lambda Function** (`lambda.tf`): The poll handler that runs the full Trading Brain pipeline (screener poll, LangGraph analysis, Telegram alert, DynamoDB persist).
+- **EventBridge Rule** (`lambda.tf`): A CloudWatch Events schedule that fires the poll handler every 15 minutes (configurable via `schedule_expression`).
+- **Cognito** (`cognito.tf`): User pool and web client for passwordless OTP sign-in (dashboard auth).
 
 ## Prerequisites
 
@@ -25,61 +28,76 @@ git clone <your-repo-url>
 cd trading_brain/infrastructure
 ```
 
-2. Create a `terraform.tfvars` file with your sensitive values:
+2. Create a `dev.tfvars` (or `prod.tfvars`) file with your values:
 
 ```bash
-cat > terraform.tfvars <<EOF
-aws_region = "us-east-1"
-table_name = "TradingAlerts"
-secret_name = "trading-brain-secrets"
+cat > dev.tfvars <<EOF
+aws_region   = "us-east-1"
+table_name   = "TradingAlerts"
+secret_name  = "trading-brain-secrets"
+environment  = "dev"
 
-# Your API Keys (Set these to your actual values)
-groq_api_key = "your-groq-api-key"
-telegram_bot_token = "your-telegram-bot-token"
-telegram_chat_id = "your-telegram-chat-id"
-stock_screener_api_key = "your-stock-screener-api-key"
-langsmith_api_key = "your-langsmith-api-key"
-stock_screener_url = "http://localhost:8000"
+# Schedule: every 15 min (default) or "rate(30 minutes)" for the wider window
+schedule_expression = "rate(15 minutes)"
+
+# Strategy tuning (optional, defaults match config.py)
+# polling_interval_minutes  = 15
+# strategy_volume_threshold = 3.0
 EOF
 ```
 
-3. Initialize Terraform:
+3. Package and deploy in one step:
 
 ```bash
+# From trading_brain/
+bash scripts/deploy.sh dev
+```
+
+Or run the steps manually:
+
+```bash
+# 1. Build the Lambda zip
+bash scripts/package_lambda.sh
+
+# 2. Terraform
+cd infrastructure
 terraform init
+terraform plan -var-file=dev.tfvars
+terraform apply -var-file=dev.tfvars
 ```
 
-4. Plan the infrastructure:
-
-```bash
-terraform plan
-```
-
-5. Apply the infrastructure:
-
-```bash
-terraform apply -auto-approve
-```
-
-6. Verify the resources are created:
+4. Verify key outputs:
 
 ```bash
 terraform output
 ```
 
+Expected outputs include `lambda_function_name`, `lambda_function_arn`, `eventbridge_rule_name`, `dynamodb_table_name`, `iam_role_arn`, `secret_name`.
+
 ## Usage with Lambda
 
-After deploying the infrastructure, you need to configure your Lambda function:
+The Lambda function is now defined in `lambda.tf` and deployed by Terraform.
+After `terraform apply`, the function exists in AWS with all environment variables
+pre-wired. No manual console steps are needed.
 
-1. **Add Environment Variables** to your Lambda function:
-   - `AWS_REGION`: The AWS region (e.g., `us-east-1`).
-   - `DYNAMODB_TABLE_NAME`: The DynamoDB table name (from `terraform output dynamodb_table_name`).
-   - `SECRET_NAME`: The Secrets Manager secret name (from `terraform output secret_name`).
-   - `TELEGRAM_CHAT_ID`: Your Telegram Chat ID (from `terraform.tfvars`).
+To invoke it manually for a quick sanity check:
 
-2. **Set up IAM Role for Lambda**: Attach the IAM role created by Terraform to your Lambda function.
+```bash
+aws lambda invoke \
+  --function-name "$(terraform output -raw lambda_function_name)" \
+  --log-type Tail \
+  --query 'LogResult' \
+  --output text \
+  response.json | base64 --decode
+cat response.json
+```
 
-3. **Update the Lambda Code**: Modify your Lambda code to retrieve secrets from AWS Secrets Manager.
+To check the EventBridge rule is live:
+
+```bash
+aws events describe-rule \
+  --name "$(terraform output -raw eventbridge_rule_name)"
+```
 
 ## Destroying Infrastructure
 
