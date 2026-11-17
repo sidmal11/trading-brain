@@ -122,6 +122,14 @@ def _broadcast(world, ticker="NVDA"):
     return alert_id
 
 
+def test_alert_records_price_and_is_found_by_ticker_strategy_date(world):
+    db = world["db"]
+    db.save_alert("a-price", "NVDA", "sig", "pros", price=182.4, trading_date="2026-11-16")
+    assert db.alert_exists("NVDA", "volume", "2026-11-16") is True
+    assert db.alert_exists("NVDA", "volume", "2026-11-17") is False
+    assert float(db.get_alert("a-price")["priceAtAlert"]) == 182.4
+
+
 # ── UC-1 Subscribe ────────────────────────────────────────────────────────────
 
 def test_uc1_start_subscribes_and_replies(world):

@@ -1,6 +1,8 @@
 import boto3
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
+from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 from config import Config
 
@@ -32,7 +34,8 @@ class DbClient:
         self.dynamodb = boto3.resource('dynamodb')
         self.table = self.dynamodb.Table(Config.DYNAMODB_TABLE_NAME)
 
-    def save_alert(self, alert_id, ticker, signal_details, pros_cons, chat_id=None, message_id=None):
+    def save_alert(self, alert_id, ticker, signal_details, pros_cons, chat_id=None, message_id=None,
+                   price=None, strategy='volume', trading_date=None):
         """Saves a new alert to DynamoDB.
 
         Field names here are the contract `types/market.ts` declares. `aiProsCons`
@@ -47,7 +50,11 @@ class DbClient:
             'signalDetails': signal_details,
             'aiProsCons': pros_cons,
             'status': STATUS_PENDING,
+            'strategy': strategy,
         }
+        if trading_date: item['tradingDate'] = trading_date
+        # DynamoDB rejects Python floats; go through str to keep the printed value.
+        if price is not None: item['priceAtAlert'] = Decimal(str(price))
         if chat_id: item['telegramChatId'] = chat_id
         if message_id: item['telegramMessageId'] = message_id
 
@@ -79,6 +86,27 @@ class DbClient:
 
         items = response.get('Items', [])
         return sorted(items, key=lambda item: item.get('timestamp') or '', reverse=True)
+
+    def alert_exists(self, ticker, strategy, trading_date):
+        """True when an alert for this ticker, strategy and trading date is stored.
+
+        Scan with a filter (no index on these fields), paged because Limit and
+        filters apply before the match. On error returns False: an alert sent
+        twice is better than an alert lost.
+        """
+        kwargs = {'FilterExpression': Attr('ticker').eq(ticker) & Attr('strategy').eq(strategy)
+                  & Attr('tradingDate').eq(trading_date)}
+        try:
+            while True:
+                response = self.table.scan(**kwargs)
+                if response.get('Items'):
+                    return True
+                if 'LastEvaluatedKey' not in response:
+                    return False
+                kwargs['ExclusiveStartKey'] = response['LastEvaluatedKey']
+        except ClientError as e:
+            logger.error(f"Failed to check for existing alert {ticker}: {e}")
+            return False
 
     def get_alert(self, alert_id):
         """Return a single alert, or None if the id is not in the table."""

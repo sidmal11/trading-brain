@@ -43,7 +43,8 @@ class SqliteStore:
 
     # ── Alerts (DbClient interface) ──────────────────────────────────────────
 
-    def save_alert(self, alert_id, ticker, signal_details, pros_cons, chat_id=None, message_id=None):
+    def save_alert(self, alert_id, ticker, signal_details, pros_cons, chat_id=None, message_id=None,
+                   price=None, strategy="volume", trading_date=None):
         item = {
             "alertId": alert_id,
             "ticker": ticker,
@@ -51,7 +52,12 @@ class SqliteStore:
             "signalDetails": signal_details,
             "aiProsCons": pros_cons,
             "status": STATUS_PENDING,
+            "strategy": strategy,
         }
+        if trading_date:
+            item["tradingDate"] = trading_date
+        if price is not None:
+            item["priceAtAlert"] = price
         if chat_id:
             item["telegramChatId"] = chat_id
         if message_id:
@@ -68,6 +74,13 @@ class SqliteStore:
             rows = conn.execute("SELECT doc FROM alerts").fetchall()
         items = [json.loads(r[0]) for r in rows][:limit]
         return sorted(items, key=lambda i: i.get("timestamp") or "", reverse=True)
+
+    def alert_exists(self, ticker, strategy, trading_date):
+        """True when an alert for this ticker, strategy and trading date is stored."""
+        return any(
+            a.get("ticker") == ticker and a.get("strategy") == strategy and a.get("tradingDate") == trading_date
+            for a in self.list_alerts(limit=10**9)
+        )
 
     def get_alert(self, alert_id):
         with self._connect() as conn:
