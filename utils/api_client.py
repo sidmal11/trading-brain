@@ -4,7 +4,7 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-# shortcut: fixed list of large US tickers, not a full-market scan; widen it later
+# shortcut: fixed list of large US tickers, not a full-market scan; widen it when the screener needs tickers outside this list
 UNIVERSE = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD", "NFLX", "AVGO",
     "JPM", "BAC", "GS", "V", "MA", "XOM", "CVX", "WMT", "COST", "HD",
