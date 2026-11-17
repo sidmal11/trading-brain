@@ -12,19 +12,19 @@ UNIVERSE = [
 ]
 
 
-def _volume_score(volumes):
-    """Latest volume divided by the average of the prior days, or None if there is too little history."""
+def _volume_score(volumes, session_fraction=1.0):
+    """Latest volume, projected to a full day by dividing by session_fraction, over the average of the prior days; None if too little history."""
     volumes = [v for v in volumes if v == v and v > 0]  # drops NaN and zero-volume days
     if len(volumes) < 6:
         return None
     baseline = sum(volumes[:-1]) / (len(volumes) - 1)
-    return round(volumes[-1] / baseline, 2)
+    return round(volumes[-1] / session_fraction / baseline, 2)
 
 
 class ApiClient:
     """Market data from Yahoo Finance (via yfinance). Unofficial and rate-limited by Yahoo."""
 
-    def get_market_scan_results(self, market="US"):
+    def get_market_scan_results(self, market="US", session_fraction=1.0, trading_date=None):
         try:
             data = yf.download(UNIVERSE, period="1mo", interval="1d", group_by="ticker",
                                threads=False, progress=False, auto_adjust=False)
@@ -35,12 +35,16 @@ class ApiClient:
         results = []
         for ticker in UNIVERSE:
             try:
-                volumes = list(data[ticker]["Volume"].dropna())
+                bars = data[ticker].dropna(subset=["Volume"])
             except KeyError:
                 continue
-            score = _volume_score(volumes)
+            # Yahoo may not have posted today's bar yet; the newest bar would then be a full prior day, and projecting it invents a surge
+            if trading_date and (bars.empty or bars.index[-1].strftime("%Y-%m-%d") != trading_date):
+                continue
+            score = _volume_score(list(bars["Volume"]), session_fraction)
             if score is not None:
-                results.append({"ticker": ticker, "volume_score": score})
+                close = bars["Close"].iloc[-1]
+                results.append({"ticker": ticker, "volume_score": score, "price": None if close != close else float(close)})
         return sorted(results, key=lambda r: r["volume_score"], reverse=True)
 
     def get_stock_details(self, ticker):
