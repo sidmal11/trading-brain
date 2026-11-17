@@ -25,3 +25,6 @@ mangum
 pyjwt[crypto]
 
 python-dotenv
+
+# IANA time zone data for zoneinfo; Windows and slim Docker images ship none.
+tzdata
