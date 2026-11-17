@@ -68,10 +68,14 @@ cat > /etc/cron.d/trading-brain-backup <<EOF
 EOF
 
 echo "==> Telegram webhook"
-set -a; . "$APP_DIR/.env"; set +a
-curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-  -d "url=https://${DOMAIN}/api/telegram/webhook" \
-  -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
+# Read single values; sourcing .env fails on values with spaces such as SMTP_FROM.
+envval() { grep -E "^$1=" "$APP_DIR/.env" | head -1 | cut -d= -f2- || true; }
+TOKEN="$(envval TELEGRAM_BOT_TOKEN)"
+SECRET_TOKEN="$(envval TELEGRAM_WEBHOOK_SECRET)"
+DOMAIN_NAME="$(envval DOMAIN)"
+curl -s "https://api.telegram.org/bot${TOKEN}/setWebhook" \
+  -d "url=https://${DOMAIN_NAME}/api/telegram/webhook" \
+  -d "secret_token=${SECRET_TOKEN}" \
   -d 'allowed_updates=["message","callback_query"]' || echo "webhook registration failed; see log"
 echo
 echo "==> Startup finished"
