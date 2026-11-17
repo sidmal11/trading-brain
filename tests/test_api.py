@@ -199,7 +199,7 @@ def test_alerts_are_returned_unshaped_for_the_client_contract(client):
 def test_review_records_the_decision(client, db):
     response = client.post("/api/alerts/alert-1/review", json={"decision": "APPROVED"})
     assert response.status_code == 200
-    assert response.json() == {"success": True, "alertId": "alert-1", "status": "APPROVED"}
+    assert response.json() == {"success": True, "alertId": "alert-1", "status": "APPROVED", "order": None}
     assert db.updates == [("alert-1", "APPROVED")]
 
 

@@ -10,7 +10,10 @@ Routes:
     GET  /api/futures                  FuturesContract[]
     GET  /api/market-overview          MarketOverview
     GET  /api/alerts                   raw alert rows (normalised client-side)
-    POST /api/alerts/{alertId}/review  record an approve/reject decision
+    POST /api/alerts/{alertId}/review  record a decision; APPROVED buys in the mock account
+    GET  /api/orders                   mock orders, newest first
+    GET  /api/positions                mock cash and open positions
+    POST /api/positions/{ticker}/close sell a whole mock position
     POST /api/telegram/webhook         Telegram button taps
     GET  /health                       unauthenticated liveness probe
 """
@@ -34,7 +37,7 @@ from utils.db_client import VALID_STATUSES, DbClient
 from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import TelegramClient, parse_callback
 
-from . import market_source, top_stocks
+from . import market_source, top_stocks, trading
 from .auth import auth_required, email_otp_enabled, get_otp_service, require_user
 
 logger = logging.getLogger(__name__)
@@ -325,7 +328,15 @@ def review_alert(
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown alert id.")
 
-    if not db.update_alert_status(alert_id, body.decision):
+    order = None
+    try:
+        if body.decision == "APPROVED":
+            order = trading.execute_approval(existing, db)
+        elif not db.update_alert_status(alert_id, body.decision):
+            raise trading.DecisionNotRecorded(alert_id)
+    except trading.TradeRefused as refused:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
+    except trading.DecisionNotRecorded:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not record the decision.",
@@ -333,12 +344,34 @@ def review_alert(
 
     # Mirror the decision onto the Telegram message so the two surfaces agree.
     # A failure here is logged inside the client and must not fail the request:
-    # the decision is already durably recorded.
-    TelegramClient().update_message_decision(
-        existing.get("telegramMessageId"), existing.get("ticker", ""), body.decision
-    )
+    # the decision is already durably recorded. A buy still in flight elsewhere
+    # has not approved the alert yet, so it is not mirrored.
+    if order is None or order["status"] == "FILLED":
+        TelegramClient().update_message_decision(
+            existing.get("telegramMessageId"), existing.get("ticker", ""), body.decision
+        )
 
-    return {"success": True, "alertId": alert_id, "status": body.decision}
+    return {"success": True, "alertId": alert_id, "status": body.decision, "order": order}
+
+
+@router.get("/orders")
+def get_orders():
+    return trading.get_trades_store().list_orders()
+
+
+@router.get("/positions")
+def get_positions():
+    return trading.positions_snapshot()
+
+
+@router.post("/positions/{ticker}/close")
+def close_position(ticker: str = Path(..., min_length=1, max_length=16)):
+    try:
+        return trading.close_position(ticker.upper())
+    except LookupError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No open position.")
+    except trading.TradeRefused as refused:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
 
 
 # ── Email login (AUTH_MODE=email_otp) ─────────────────────────────────────────
