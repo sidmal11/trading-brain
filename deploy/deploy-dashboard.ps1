@@ -1,10 +1,12 @@
-# Build the dashboard on this PC and upload it to the server.
-# Usage (from trading_brain\deploy):  .\deploy-dashboard.ps1 -Server ubuntu@34.148.191.229
+# Build the dashboard on this PC, upload it to Cloud Storage, and sync the VM.
+# Usage (from trading_brain\deploy):  .\deploy-dashboard.ps1
 param(
-  [Parameter(Mandatory = $true)][string]$Server,
+  [string]$Project = "trading-brain-514921",
+  [string]$Zone = "us-east1-c",
+  [string]$Vm = "trading-brain",
   [string]$Domain = "trading-brain.duckdns.org",
   [string]$FrontendDir = "$PSScriptRoot\..\..\frontend",
-  [string]$KeyPath = "$HOME\.ssh\trading_gcp"
+  [string]$Gcloud = "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,13 +16,12 @@ try {
   $env:VITE_AUTH_MODE = "email_otp"
   $env:VITE_TRADING_BRAIN_API_URL = "https://$Domain"
   npm run build
-  Remove-Item -Recurse -Force "dist\__capture-seed.html" -ErrorAction SilentlyContinue
+  Remove-Item -Force "dist\__capture-seed.html" -ErrorAction SilentlyContinue
 } finally {
   Pop-Location
 }
 
-$dist = "$FrontendDir\dist"
-ssh -i $KeyPath $Server "rm -rf /opt/trading_brain/frontend-dist && mkdir -p /opt/trading_brain/frontend-dist"
-scp -r -i $KeyPath "$dist\*" "${Server}:/opt/trading_brain/frontend-dist/"
-ssh -i $KeyPath $Server "chmod -R a+rX /opt/trading_brain/frontend-dist && ls /opt/trading_brain/frontend-dist"
-Write-Host "Dashboard uploaded. Caddy serves the new files without a restart."
+$bucket = "gs://$Project-dashboard"
+& $Gcloud --project $Project storage rsync -r -d "$FrontendDir\dist" $bucket
+& $Gcloud --project $Project compute ssh $Vm --zone $Zone --command "sudo gsutil -m rsync -r -d $bucket /opt/trading_brain/frontend-dist && sudo chmod -R a+rX /opt/trading_brain/frontend-dist"
+Write-Host "Dashboard deployed. Caddy serves the new files without a restart."
