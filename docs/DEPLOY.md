@@ -31,7 +31,7 @@ Use your own domain, or a free subdomain from DuckDNS. Either way, create an **A
 5. **Copy the project** to `/opt/trading_brain` (for example with `scp` or `git clone`).
 6. **Build the dashboard** on your own machine, then copy the output to the server as `frontend-dist/`. The build must use the same origin as the API:
    ```bash
-   cd frontend && VITE_USE_MOCK_DATA=false VITE_AUTH_MODE=email_otp VITE_TRADING_BRAIN_API_URL= npm run build
+   cd frontend && VITE_USE_MOCK_DATA=false VITE_AUTH_MODE=email_otp VITE_TRADING_BRAIN_API_URL=https://your.domain.example npm run build
    ```
    Copy `frontend/dist` to `/opt/trading_brain/frontend-dist`.
 7. **Create the secrets file** `/opt/trading_brain/.env` and make it readable only by you:
@@ -70,7 +70,7 @@ Use your own domain, or a free subdomain from DuckDNS. Either way, create an **A
      -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>" \
      -d 'allowed_updates=["message","callback_query"]'
    ```
-10. **Check it:** `curl https://your.domain.example/health` should return `{"status":"ok","authEnforced":true}`.
+10. **Check it:** `curl https://your.domain.example/api/auth/me` should return `{"detail":"Not signed in."}` with status 401. Only `/api/*` reaches the API; `/health` is served by the dashboard.
 
 ## Backups
 
