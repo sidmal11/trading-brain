@@ -79,11 +79,12 @@ class TradesStore:
 
     def claim_sell(self, ticker, trading_date):
         """Insert a PENDING sell of the whole open position, or return None when there is
-        nothing to sell or a sell for this ticker is already in flight."""
+        nothing to sell or an order (buy or sell) for this ticker is already in flight."""
         with self._lock, self._connect() as conn:
             # The lock is per store object; BEGIN IMMEDIATE serialises across objects and processes.
             conn.execute("BEGIN IMMEDIATE")
-            if conn.execute("SELECT 1 FROM orders WHERE ticker = ? AND side = 'SELL' AND status = 'PENDING'",
+            # A pending buy too: selling only the filled lots would orphan its shares once it fills.
+            if conn.execute("SELECT 1 FROM orders WHERE ticker = ? AND status = 'PENDING'",
                             (ticker,)).fetchone():
                 return None
             quantity = sum(o["quantity"] for o in self._open_lots(conn).get(ticker, []))
@@ -145,7 +146,9 @@ class TradesStore:
                 continue
             cost = sum(o["quantity"] * o["fillPrice"] for o in open_lots)
             newest = open_lots[-1]
+            # costBasis is unrounded so P/L is exact; only averageCost is rounded for display.
             positions.append({"ticker": ticker, "quantity": quantity, "averageCost": round(cost / quantity, 2),
+                              "costBasis": cost,
                               "stopPrice": newest["stopPrice"], "targetPrice": newest["targetPrice"]})
         return positions
 

@@ -120,16 +120,16 @@ def positions_snapshot():
     positions = []
     for p in store.open_positions():
         price = price_of(p["ticker"])
-        cost = p["averageCost"]
-        pnl = None if price is None else round((price - cost) * p["quantity"], 2)
+        cost = p["costBasis"]
+        gain = None if price is None else price * p["quantity"] - cost
         positions.append({
             "ticker": p["ticker"],
             "quantity": p["quantity"],
-            "averageCost": cost,
+            "averageCost": p["averageCost"],
             "currentPrice": price,
             "marketValue": None if price is None else round(price * p["quantity"], 2),
-            "unrealizedPnl": pnl,
-            "unrealizedPnlPercent": None if price is None else round((price - cost) / cost * 100, 2),
+            "unrealizedPnl": None if gain is None else round(gain, 2),
+            "unrealizedPnlPercent": None if gain is None else round(gain / cost * 100, 2),
             "stopPrice": p["stopPrice"],
             "targetPrice": p["targetPrice"],
         })

@@ -113,3 +113,16 @@ def test_tap_while_order_in_flight_does_not_claim_a_buy(tg):
     assert _answers(tg.http) == ["AAPL: order in progress."]
     assert tg.http.texts() == []
     assert tg.status() == "PENDING"
+
+
+def test_tap_approve_unexpected_error_is_answered_not_redelivered(tg, monkeypatch):
+    def locked(*a, **k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(tg.trades, "fill", locked)
+    r = tg.tap()
+    assert r.status_code == 200 and r.json()["status"] == "PENDING"
+    assert _answers(tg.http) == ["Broker error."]
+    assert "AAPL not bought: Broker error." in tg.http.texts()
+    assert all(o["status"] != "FILLED" for o in tg.trades.list_orders())
+    assert tg.status() == "PENDING"

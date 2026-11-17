@@ -77,10 +77,11 @@ def parse_callback(callback_data: str):
     return alert_id, ticker, status
 
 
-def _truncate(body: str) -> str:
-    if len(body) <= MAX_MESSAGE_CHARS:
-        return body
-    return body[: MAX_MESSAGE_CHARS - len(_TRUNCATION_NOTE)] + _TRUNCATION_NOTE
+def _truncate(body: str, tail: str = "") -> str:
+    """Fit body + tail in one message; only the body is cut, so the tail always survives."""
+    if len(body) + len(tail) <= MAX_MESSAGE_CHARS:
+        return body + tail
+    return body[: MAX_MESSAGE_CHARS - len(_TRUNCATION_NOTE) - len(tail)] + _TRUNCATION_NOTE + tail
 
 
 class TelegramClient:
@@ -116,7 +117,7 @@ class TelegramClient:
             return {"ok": False, "status": response.status_code}
         return response.json()
 
-    def format_alert(self, ticker: str, signal_details: str, analysis: str) -> str:
+    def format_alert(self, ticker: str, signal_details: str, analysis: str, tail: str = "") -> str:
         """Build the message body.
 
         HTML parse mode, not Markdown: LLM output routinely contains `*`, `_`
@@ -126,7 +127,8 @@ class TelegramClient:
         return _truncate(
             f"<b>📈 {escape(ticker)}</b>\n"
             f"<i>{escape(signal_details)}</i>\n\n"
-            f"{escape(analysis)}"
+            f"{escape(analysis)}",
+            tail,
         )
 
     @property
@@ -148,7 +150,7 @@ class TelegramClient:
         if alert_id and str(chat_id) in self.admin_chat_ids:
             payload["reply_markup"] = build_approval_keyboard(alert_id, ticker)
             if order_line:
-                payload["text"] = _truncate(f"{payload['text']}\n\n{escape(order_line)}")
+                payload["text"] = self.format_alert(ticker, signal_details, analysis, f"\n\n{escape(order_line)}")
         return payload
 
     def send_alert(self, ticker, signal_details, analysis, alert_id=None):

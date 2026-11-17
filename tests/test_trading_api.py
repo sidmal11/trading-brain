@@ -249,3 +249,41 @@ def test_reject_is_unchanged(env):
     assert r.status_code == 200 and r.json()["order"] is None
     assert env.status() == "REJECTED"
     assert env.trades.list_orders() == []
+
+
+def test_pnl_uses_the_exact_cost_basis_not_the_rounded_average(env):
+    for alert_id, price in (("b1", 33.335), ("b2", 33.335), ("b3", 33.34)):
+        order, _ = env.trades.claim_buy(alert_id, "XYZ", 50, TODAY)
+        env.trades.fill(order["id"], price)
+    env.price = 5000.5 / 150  # unchanged: the exact average cost
+    p = env.client.get("/api/positions").json()["positions"][0]
+    assert p["averageCost"] == 33.34
+    assert p["unrealizedPnl"] == 0.0 and p["unrealizedPnlPercent"] == 0.0
+    assert set(p) == {"ticker", "quantity", "averageCost", "currentPrice", "marketValue",
+                      "unrealizedPnl", "unrealizedPnlPercent", "stopPrice", "targetPrice"}
+
+
+@pytest.fixture
+def off_sqlite(env, monkeypatch):
+    monkeypatch.setattr(Config, "STORAGE_BACKEND", "dynamodb")
+
+    def no_trades_file():
+        raise AssertionError("trades file opened off SQLite")
+
+    monkeypatch.setattr(trading, "get_trades_store", no_trades_file)
+    return env
+
+
+def test_orders_empty_off_sqlite(off_sqlite):
+    r = off_sqlite.client.get("/api/orders")
+    assert r.status_code == 200 and r.json() == []
+
+
+def test_positions_empty_off_sqlite(off_sqlite):
+    r = off_sqlite.client.get("/api/positions")
+    assert r.status_code == 200
+    assert r.json() == {"broker": "mock", "startingCash": 10000.0, "cash": 10000.0, "positions": []}
+
+
+def test_close_is_404_off_sqlite(off_sqlite):
+    assert off_sqlite.client.post("/api/positions/AAPL/close").status_code == 404

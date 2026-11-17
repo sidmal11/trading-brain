@@ -356,16 +356,23 @@ def review_alert(
 
 @router.get("/orders")
 def get_orders():
+    if Config.STORAGE_BACKEND != "sqlite":  # the trades file lives only beside the SQLite store
+        return []
     return trading.get_trades_store().list_orders()
 
 
 @router.get("/positions")
 def get_positions():
+    if Config.STORAGE_BACKEND != "sqlite":
+        cash = Config.MOCK_STARTING_CASH
+        return {"broker": "mock", "startingCash": cash, "cash": cash, "positions": []}
     return trading.positions_snapshot()
 
 
 @router.post("/positions/{ticker}/close")
 def close_position(ticker: str = Path(..., min_length=1, max_length=16)):
+    if Config.STORAGE_BACKEND != "sqlite":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No open position.")
     try:
         return trading.close_position(ticker.upper())
     except LookupError:
@@ -506,6 +513,15 @@ def telegram_webhook(
         return {"ok": True, "alertId": alert_id, "status": "PENDING"}
     except trading.DecisionNotRecorded:
         recorded = False
+    except Exception:
+        # A 500 makes Telegram redeliver the tap later, which would buy at a price nobody tapped against.
+        logger.exception("Webhook decision %s failed for alert %s", decision, alert_id)
+        if decision != "APPROVED":
+            telegram.answer_callback_query(cb_id, "Could not record that decision.")
+            return {"ok": True, "alertId": alert_id, "status": "PENDING"}
+        telegram.answer_callback_query(cb_id, trading.BROKER_ERROR)
+        telegram.send_text(chat_id, f"{ticker} not bought: {trading.BROKER_ERROR}")
+        return {"ok": True, "alertId": alert_id, "status": "PENDING"}
 
     if not recorded:
         telegram.answer_callback_query(cb_id, "Could not record that decision.")

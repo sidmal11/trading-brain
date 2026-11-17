@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from config import Config  # noqa: E402
 from utils.telegram_client import (  # noqa: E402
     MAX_MESSAGE_CHARS,
     TelegramClient,
@@ -131,3 +132,12 @@ def test_api_error_response_returns_none():
     client = TelegramClient(token="t", chat_id="c")
     client._post = lambda method, payload: {"ok": False, "description": "chat not found"}
     assert client.send_alert("NVDA", "sig", "analysis", alert_id="a-1") is None
+
+
+def test_order_line_survives_a_long_analysis(monkeypatch):
+    monkeypatch.setattr(Config, "ADMIN_CHAT_IDS", "")
+    client = TelegramClient(token="t", chat_id="c")
+    line = "Approve buys 2 AAPL (MOCK)."
+    text = client._alert_payload("c", "AAPL", "sig", "x" * 5000, "a1", line)["text"]
+    assert len(text) <= MAX_MESSAGE_CHARS
+    assert text.endswith(line) and "(analysis truncated)" in text

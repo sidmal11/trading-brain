@@ -51,7 +51,8 @@ def test_position_and_cash_after_buy_buy_close(store):
     _filled_buy(store, "a1", 2, 100.0)
     _filled_buy(store, "a2", 2, 110.0, stop_price=99.0, target_price=130.0)
     assert store.open_positions() == [
-        {"ticker": "AAPL", "quantity": 4, "averageCost": 105.0, "stopPrice": 99.0, "targetPrice": 130.0}
+        {"ticker": "AAPL", "quantity": 4, "averageCost": 105.0, "costBasis": 420.0,
+         "stopPrice": 99.0, "targetPrice": 130.0}
     ]
     assert store.cash(10000) == 9580.0
     sell = _filled_sell(store, 120.0)
@@ -80,10 +81,10 @@ def test_pending_and_failed_orders_do_not_count(store):
 def test_filled_buys_on_counts_only_filled_buys_that_day(store):
     _filled_buy(store, "a1", 1, 100.0)
     _filled_buy(store, "a2", 1, 100.0, day="2026-11-16")
-    store.claim_buy("a3", "AAPL", 1, DAY)
     failed, _ = store.claim_buy("a4", "AAPL", 1, DAY)
     store.fail(failed["id"], "Broker error.")
     _filled_sell(store, 100.0)
+    store.claim_buy("a3", "AAPL", 1, DAY)  # after the sell: a pending buy blocks Close
     assert store.filled_buys_on(DAY) == 1
 
 
@@ -173,3 +174,11 @@ def test_failed_sell_does_not_block_a_later_close(store):
     _filled_buy(store, "a1", 2, 100.0)
     store.fail(store.claim_sell("AAPL", DAY)["id"], "Broker error.")
     assert store.claim_sell("AAPL", DAY)["quantity"] == 2
+
+
+def test_close_refused_while_a_buy_of_the_ticker_is_pending(store):
+    _filled_buy(store, "a1", 2, 100.0)
+    pending, _ = store.claim_buy("a2", "AAPL", 3, DAY)
+    assert store.claim_sell("AAPL", DAY) is None
+    store.fill(pending["id"], 100.0)
+    assert store.claim_sell("AAPL", DAY)["quantity"] == 5
