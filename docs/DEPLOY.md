@@ -74,12 +74,13 @@ Use your own domain, or a free subdomain from DuckDNS. Either way, create an **A
 
 ## Backups
 
-SQLite holds the alerts and subscribers. Back it up daily with SQLite's own backup command, then copy the result off the server:
+SQLite holds the alerts and subscribers (`trading_brain.db`) and the mock account's orders (`trades.db`). Back it up daily with SQLite's own backup command, then copy the result off the server:
 
 ```bash
 sudo apt install -y sqlite3
 # crontab -e   (daily at 03:15)
 15 3 * * * sqlite3 /opt/trading_brain/data/trading_brain.db ".backup '/opt/backups/tb-$(date +\%F).db'"
+20 3 * * * sqlite3 /opt/trading_brain/data/trades.db ".backup '/opt/backups/trades-$(date +\%F).db'"
 ```
 
 Keep at least 14 days, and copy them to a second place (another machine or cloud storage).

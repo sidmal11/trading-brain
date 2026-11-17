@@ -45,15 +45,26 @@ echo "==> Dashboard"
 gsutil -m rsync -r -d "$BUCKET" "$APP_DIR/frontend-dist"
 chmod -R a+rX "$APP_DIR/frontend-dist"
 
-echo "==> Restore the database from the newest backup if this is a fresh disk"
+echo "==> Restore the databases from the newest backups if this is a fresh disk"
+# List only tb-* for the main file: trades backups live under trades/ and sort after tb-.
 DB="$APP_DIR/data/trading_brain.db"
 if [ ! -f "$DB" ]; then
-  latest="$(gsutil ls "$BUCKET-backups/" 2>/dev/null | sort | tail -1 || true)"
+  latest="$(gsutil ls "$BUCKET-backups/tb-*" 2>/dev/null | sort | tail -1 || true)"
   if [ -n "$latest" ]; then
     gsutil cp "$latest" "$DB"
     echo "Restored $latest"
   else
     echo "No backup found; starting with an empty database."
+  fi
+fi
+TRADES_DB="$APP_DIR/data/trades.db"
+if [ ! -f "$TRADES_DB" ]; then
+  latest="$(gsutil ls "$BUCKET-backups/trades/trades-*" 2>/dev/null | sort | tail -1 || true)"
+  if [ -n "$latest" ]; then
+    gsutil cp "$latest" "$TRADES_DB"
+    echo "Restored $latest"
+  else
+    echo "No trades backup found; starting with an empty trades file."
   fi
 fi
 
@@ -62,9 +73,10 @@ cd "$APP_DIR"
 docker compose up -d --build
 docker image prune -f >/dev/null
 
-echo "==> Daily SQLite backup to Cloud Storage (14 days kept)"
+echo "==> Daily SQLite backup to Cloud Storage (14 days kept by the bucket lifecycle rule, which covers every object)"
 cat > /etc/cron.d/trading-brain-backup <<EOF
 15 3 * * * root sqlite3 $APP_DIR/data/trading_brain.db ".backup '/tmp/tb.db'" && gsutil -q cp /tmp/tb.db $BUCKET-backups/tb-\$(date +\%F).db && rm -f /tmp/tb.db
+20 3 * * * root sqlite3 $APP_DIR/data/trades.db ".backup '/tmp/trades.db'" && gsutil -q cp /tmp/trades.db $BUCKET-backups/trades/trades-\$(date +\%F).db && rm -f /tmp/trades.db
 EOF
 
 echo "==> Telegram webhook"
