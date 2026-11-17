@@ -7,8 +7,6 @@ from utils.storage import alert_store, subscriber_store
 from utils.settings_store import MARKET_US_STOCKS, effective_settings
 from config import Config
 from utils.broker import whole_shares
-from graph import run_workflow
-from utils.langgraph_state import TradingBrainState
 from utils.market_clock import MIN_SESSION_FRACTION, session_fraction, trading_date
 from utils.api_client import UNIVERSE
 from strategies import macd, strategy_notes, volume
@@ -32,11 +30,6 @@ def _order_line(settings, ticker, price):
 
 def lambda_handler(event, context):
     """Main orchestration function for the Trading Brain."""
-    if Config.FEATURE_MULTI_AGENT_MODE:
-        run_workflow(TradingBrainState())
-        logger.info("Multi-agent workflow completed.")
-        return {"statusCode": 200, "body": "Multi-agent workflow completed."}
-
     api = ApiClient()
     llm = LlmClient()
     telegram = TelegramClient()

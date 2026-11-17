@@ -142,7 +142,7 @@ def test_signals_match_the_stocksignal_contract(client):
     for field in (
         "id", "ticker", "companyName", "sector", "industry", "marketCap",
         "marketCapCategory", "currentPrice", "priceChange", "priceChangePercent",
-        "volume", "averageVolume", "volumeSurgeRatio", "relativeStrengthRank",
+        "volume", "averageVolume", "volumeSurgeRatio",
         "signalType", "signalDescription", "alertStatus", "detectedAt",
         "aiAnalysis", "chartData",
     ):

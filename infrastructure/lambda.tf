@@ -41,8 +41,6 @@ resource "aws_lambda_function" "poll_handler" {
       AWS_DEFAULT_REGION            = var.aws_region
       POLLING_INTERVAL_MINUTES      = tostring(var.polling_interval_minutes)
       STRATEGY_VOLUME_THRESHOLD     = tostring(var.strategy_volume_threshold)
-      FEATURE_MULTI_AGENT_MODE      = "false"
-      FEATURE_UI_DASHBOARD          = "true"
     }
   }
 

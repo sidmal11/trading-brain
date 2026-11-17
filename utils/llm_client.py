@@ -33,15 +33,19 @@ class LlmClient:
         
         try:
             completion = self.client.chat.completions.create(
-                model="llama3-70b-8192",
+                model=Config.GROQ_MODEL,
                 messages=[
                     {"role": "system", "content": "You are a professional trading analyst."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
-                max_tokens=256
+                max_tokens=1024,
+                reasoning_effort="low",
             )
-            return completion.choices[0].message.content
+            text = (completion.choices[0].message.content or "").strip()
+            if not text:
+                raise ValueError("empty completion")
+            return text
         except Exception as e:
             logger.error(f"LLM analysis failed for {ticker}: {e}")
             return "Unable to generate AI analysis at this time."

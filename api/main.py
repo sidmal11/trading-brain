@@ -182,7 +182,6 @@ def _signal_from_alert(alert):
         "volumeSurgeRatio": snapshot["volumeSurgeRatio"],
         # The screener's relative-strength rank is not stored on the alert, so
         # it is not invented here. 0 reads as "unranked" in the UI's 1-99 scale.
-        "relativeStrengthRank": int(alert.get("relativeStrengthRank") or 0),
         "signalType": alert.get("signalType") or "VOLUME_BREAKTHROUGH",
         "signalDescription": alert.get("signalDetails") or "",
         "strategy": alert.get("strategy"),

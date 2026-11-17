@@ -10,7 +10,6 @@ pandas
 
 # ── LLM / orchestration ───────────────────────────────────────────────────────
 groq
-langgraph
 langchain
 langchain-openai
 langchain-groq

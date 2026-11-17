@@ -88,6 +88,7 @@ class Config:
     STOCK_SCREENER_API_KEY = _get("STOCK_SCREENER_API_KEY")
 
     GROQ_API_KEY = _get("GROQ_API_KEY")
+    GROQ_MODEL = _get("GROQ_MODEL", "openai/gpt-oss-120b")
 
     TELEGRAM_BOT_TOKEN = _get("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID = _get("TELEGRAM_CHAT_ID")
@@ -140,7 +141,3 @@ class Config:
     # dashboard is served from a different origin than the API, so the browser
     # will not send credentialed requests without this.
     CORS_ALLOWED_ORIGINS = _get("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
-
-    # Feature flags
-    FEATURE_MULTI_AGENT_MODE = _get("FEATURE_MULTI_AGENT_MODE", "false").lower() == "true"
-    FEATURE_UI_DASHBOARD = _get("FEATURE_UI_DASHBOARD", "false").lower() == "true"
