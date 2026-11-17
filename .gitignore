@@ -9,3 +9,6 @@ infrastructure/*.tfstate.*
 *.log
 data/
 frontend-dist/
+
+# Push gate marker, see AGENTS.md "Daily commit, verify, push"
+READY_TO_PUSH
