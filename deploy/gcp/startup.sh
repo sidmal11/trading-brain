@@ -45,6 +45,18 @@ echo "==> Dashboard"
 gsutil -m rsync -r -d "$BUCKET" "$APP_DIR/frontend-dist"
 chmod -R a+rX "$APP_DIR/frontend-dist"
 
+echo "==> Restore the database from the newest backup if this is a fresh disk"
+DB="$APP_DIR/data/trading_brain.db"
+if [ ! -f "$DB" ]; then
+  latest="$(gsutil ls "$BUCKET-backups/" 2>/dev/null | sort | tail -1 || true)"
+  if [ -n "$latest" ]; then
+    gsutil cp "$latest" "$DB"
+    echo "Restored $latest"
+  else
+    echo "No backup found; starting with an empty database."
+  fi
+fi
+
 echo "==> Containers"
 cd "$APP_DIR"
 docker compose up -d --build

@@ -51,6 +51,7 @@ G storage buckets describe "$BUCKET-backups" >/dev/null 2>&1 || \
   G storage buckets create "$BUCKET-backups" --location="$REGION" --uniform-bucket-level-access
 G storage buckets add-iam-policy-binding "$BUCKET-backups" --member="serviceAccount:$SA" \
   --role="roles/storage.objectCreator" >/dev/null
+G storage buckets update "$BUCKET-backups" --lifecycle-file="$HERE/backup-lifecycle.json" >/dev/null
 if [ -d "$DIST" ]; then
   G storage rsync --delete-unmatched-destination-objects -r "$DIST" "$BUCKET"
 else
