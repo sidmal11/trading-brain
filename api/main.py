@@ -37,7 +37,7 @@ from utils.db_client import VALID_STATUSES, DbClient
 from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import TelegramClient, parse_callback
 
-from . import market_source, top_stocks, trading
+from . import market_source, performance, top_stocks, trading
 from .auth import auth_required, email_otp_enabled, get_otp_service, require_user
 
 logger = logging.getLogger(__name__)
@@ -367,6 +367,20 @@ def get_positions():
         cash = Config.MOCK_STARTING_CASH
         return {"broker": "mock", "startingCash": cash, "cash": cash, "positions": []}
     return trading.positions_snapshot()
+
+
+@router.get("/performance")
+def get_performance():
+    # limit=-1 is SQLite for "no limit": the report needs every order, not the newest 200
+    orders = trading.get_trades_store().list_orders(limit=-1) if Config.STORAGE_BACKEND == "sqlite" else []
+    alerts = get_db().list_alerts()
+    tickers = sorted({o["ticker"] for o in orders} | {a["ticker"] for a in alerts})
+    dates = [o["tradingDate"] for o in orders if o.get("tradingDate")]
+    dates += [a["tradingDate"] for a in alerts if a.get("tradingDate")]
+    bars = performance.daily_bars(tickers, min(dates)) if dates else {}
+    price_now = {t: trading.price_of(t) for t in tickers}
+    return {"broker": "mock", **performance.trades_report(orders, price_now, bars),
+            "recommendations": performance.recommendations_report(alerts, price_now, bars)}
 
 
 @router.post("/positions/{ticker}/close")

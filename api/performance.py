@@ -4,6 +4,14 @@ alert has done since it was raised. Pure functions: callers pass prices and bars
 Arithmetic runs on unrounded floats; values are rounded to 2 decimals only in the output.
 """
 
+import logging
+import time
+
+import pandas as pd
+import yfinance as yf
+
+logger = logging.getLogger(__name__)
+
 Bar = tuple[str, float, float, float]  # (date "YYYY-MM-DD", high, low, close)
 
 
@@ -93,3 +101,38 @@ def recommendations_report(alerts, price_now, bars):
     for i in items:
         del i["_change"]
     return {"items": items, "byDecision": by_decision, "byStrategy": by_strategy}
+
+
+_BARS_TTL = 300
+_bars_cache = {}  # (sorted tickers, start) -> (monotonic time, result)
+
+
+def daily_bars(tickers, start):
+    """{ticker: [(date, high, low, close)]} from Yahoo daily history. Any failure gives {}."""
+    tickers = sorted(set(tickers))
+    key = (tuple(tickers), start)
+    hit = _bars_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _BARS_TTL:
+        return hit[1]
+    try:
+        # timeout keeps a slow Yahoo inside the dashboard's 8s request budget
+        frame = yf.download(tickers, start=start, interval="1d", group_by="ticker", threads=False,
+                            progress=False, auto_adjust=False, timeout=5)
+        result = {}
+        for t in tickers:
+            if isinstance(frame.columns, pd.MultiIndex):
+                if t not in frame.columns.get_level_values(0):
+                    continue
+                sub = frame[t]
+            elif len(tickers) == 1:  # a single ticker may come back without the ticker level
+                sub = frame
+            else:
+                continue
+            sub = sub[["High", "Low", "Close"]].dropna()
+            result[t] = [(d.strftime("%Y-%m-%d"), float(h), float(lo), float(c))
+                         for d, h, lo, c in zip(sub.index, sub["High"], sub["Low"], sub["Close"])]
+    except Exception:
+        logger.exception("Yahoo daily bars failed")
+        return {}
+    _bars_cache[key] = (time.monotonic(), result)
+    return result
