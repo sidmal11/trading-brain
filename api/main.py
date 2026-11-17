@@ -162,7 +162,7 @@ def _signal_from_alert(alert):
     chart = snapshot["history"]
     # Tag the highest-volume bar so the chart's breakthrough marker lines up
     # with the volume spike the signal was raised for.
-    if chart:
+    if chart and (alert.get("signalType") or "VOLUME_BREAKTHROUGH") == "VOLUME_BREAKTHROUGH":
         peak = max(range(len(chart)), key=lambda i: chart[i]["volume"])
         chart[peak] = {**chart[peak], "signalTag": "Volume Breakthrough"}
 
@@ -180,8 +180,6 @@ def _signal_from_alert(alert):
         "volume": snapshot["volume"],
         "averageVolume": snapshot["averageVolume"],
         "volumeSurgeRatio": snapshot["volumeSurgeRatio"],
-        # The screener's relative-strength rank is not stored on the alert, so
-        # it is not invented here. 0 reads as "unranked" in the UI's 1-99 scale.
         "signalType": alert.get("signalType") or "VOLUME_BREAKTHROUGH",
         "signalDescription": alert.get("signalDetails") or "",
         "strategy": alert.get("strategy"),
@@ -304,9 +302,9 @@ def get_market_overview(db=Depends(get_db)):
 
     indices = {}
     for key, symbol in (("sp500", "^GSPC"), ("nasdaq", "^IXIC"), ("vix", "^VIX")):
-        # A failed index read reports zeroes rather than failing the whole
+        # A failed index read reports nulls rather than failing the whole
         # overview; the rest of the header is still worth rendering.
-        indices[key] = market_source.index_quote(symbol) or {"price": 0.0, "changePercent": 0.0}
+        indices[key] = market_source.index_quote(symbol) or {"price": None, "changePercent": None}
 
     return {
         "status": market_source.market_status(),

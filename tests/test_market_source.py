@@ -33,8 +33,8 @@ from api.market_source import (  # noqa: E402
         (9_000_000_000, "MID"),
         (2_000_000_000, "MID"),
         (1_000_000_000, "SMALL"),
-        (0, "SMALL"),
-        (None, "SMALL"),
+        (0, None),
+        (None, None),
     ],
 )
 def test_market_cap_tiers(cap, expected):

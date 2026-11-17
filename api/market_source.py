@@ -45,7 +45,7 @@ def _yfinance():
 def market_cap_category(market_cap):
     """Bucket a market cap into the four tiers the filter toolbar offers."""
     if not market_cap:
-        return "SMALL"
+        return None
     if market_cap >= 200_000_000_000:
         return "MEGA"
     if market_cap >= 10_000_000_000:
@@ -251,7 +251,7 @@ def _fetch_quote(symbol):
         "companyName": info.get("longName") or info.get("shortName") or symbol,
         "sector": info.get("sector") or "Unknown",
         "industry": info.get("industry") or "Unknown",
-        "marketCap": int(info.get("marketCap") or 0),
+        "marketCap": int(info["marketCap"]) if info.get("marketCap") else None,
         "price": round(float(price), 2),
         "change": round(float(change), 2),
         "changePercent": round(float(change / previous_close * 100), 2) if previous_close else 0.0,

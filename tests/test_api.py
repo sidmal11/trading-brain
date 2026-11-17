@@ -11,6 +11,8 @@ contract and the decision logic, not that boto3 and yfinance work.
 import sys
 from pathlib import Path
 
+import copy
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -80,7 +82,7 @@ def db():
 
 @pytest.fixture
 def client(db, monkeypatch):
-    monkeypatch.setattr(market_source, "quote", lambda symbol: dict(QUOTE))
+    monkeypatch.setattr(market_source, "quote", lambda symbol: copy.deepcopy(QUOTE))
     monkeypatch.setattr(market_source, "index_quote", lambda symbol: {"price": 100.0, "changePercent": 1.0})
     monkeypatch.setattr(api_main, "TelegramClient", lambda *a, **k: _NoopTelegram())
     monkeypatch.setattr(api_main.Config, "ALLOW_UNAUTHENTICATED", True)
@@ -193,6 +195,18 @@ def test_signal_tags_the_highest_volume_bar(client):
     assert tagged[0]["volume"] == 99
 
 
+def test_macd_signal_gets_no_volume_breakthrough_tag(client, db):
+    db.alerts[0].update(signalType="MACD_CROSSOVER")
+    chart = client.get("/api/signals").json()[0]["chartData"]
+    assert not any(point.get("signalTag") for point in chart)
+
+
+def test_missing_market_cap_is_null_not_small(client, monkeypatch):
+    monkeypatch.setattr(market_source, "quote", lambda symbol: {**QUOTE, "marketCap": None})
+    signal = client.get("/api/signals").json()[0]
+    assert signal["marketCap"] is None and signal["marketCapCategory"] is None
+
+
 def test_signal_is_dropped_when_its_quote_cannot_be_fetched(client, monkeypatch):
     monkeypatch.setattr(market_source, "quote", lambda symbol: None)
     # A card with a zeroed price would look like real data, so the row is
@@ -257,6 +271,13 @@ def test_market_overview_counts_the_pending_queue(client, db):
     assert body["pendingApprovalsCount"] == 1
     assert set(body["sp500"]) == {"price", "changePercent"}
     assert body["status"] in {"PRE_MARKET", "REGULAR_HOURS", "POST_MARKET", "CLOSED"}
+
+
+def test_unread_index_is_null_not_zero(client, monkeypatch):
+    monkeypatch.setattr(market_source, "index_quote", lambda symbol: None)
+    body = client.get("/api/market-overview").json()
+    for key in ("sp500", "nasdaq", "vix"):
+        assert body[key] == {"price": None, "changePercent": None}
 
 
 # ── Telegram webhook ──────────────────────────────────────────────────────────
