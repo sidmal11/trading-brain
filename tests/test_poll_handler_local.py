@@ -192,3 +192,34 @@ def test_deduped_tickers_do_not_use_up_the_run_allowance(poll, monkeypatch):
     ])
     lambda_function.lambda_handler({}, None)
     assert sorted(a["ticker"] for a in alert_store().list_alerts()) == ["AMD", "NVDA"]
+
+
+def _trading(monkeypatch, on, dollars=500):
+    from utils import settings_store
+
+    base = settings_store.defaults()
+    monkeypatch.setattr(lambda_function, "effective_settings",
+                        lambda: {**base, "volumeThreshold": 1.0, "tradingEnabled": on, "dollarsPerTrade": dollars})
+
+
+def test_order_line_only_on_admin_copy(poll, monkeypatch):
+    _trading(monkeypatch, True)
+    lambda_function.lambda_handler({}, None)
+    sends = poll.sends()
+    admin = [p for p in sends if str(p["chat_id"]) == ADMIN][0]["text"]
+    sub = [p for p in sends if str(p["chat_id"]) == SUB][0]["text"]
+    assert "Approve buys 2 NVDA at about $182.40, about $365 (MOCK)." in admin
+    assert "Approve buys" not in sub
+
+
+def test_order_line_when_below_one_share(poll, monkeypatch):
+    _trading(monkeypatch, True, dollars=100)
+    lambda_function.lambda_handler({}, None)
+    admin = [p for p in poll.sends() if str(p["chat_id"]) == ADMIN][0]["text"]
+    assert "Approve will not buy: $100 is below one share at $182.40 (MOCK)." in admin
+
+
+def test_no_order_line_when_trading_off(poll, monkeypatch):
+    _trading(monkeypatch, False)
+    lambda_function.lambda_handler({}, None)
+    assert not any("Approve buys" in p["text"] or "MOCK" in p["text"] for p in poll.sends())

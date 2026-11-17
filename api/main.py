@@ -483,18 +483,43 @@ def telegram_webhook(
 
     alert_id, ticker, decision = parsed
 
-    if db.get_alert(alert_id) is None:
+    existing = db.get_alert(alert_id)
+    if existing is None:
         telegram.answer_callback_query(callback.get("id", ""), "That alert is no longer available.")
         return {"ok": True, "ignored": "unknown alert"}
 
-    if db.update_alert_status(alert_id, decision):
-        telegram.answer_callback_query(callback.get("id", ""), f"{ticker}: {decision.title()}")
-        tapped = callback.get("message") or {}
-        telegram.update_message_decision(
-            tapped.get("message_id"), ticker, decision, chat_id=(tapped.get("chat") or {}).get("id")
-        )
+    cb_id = callback.get("id", "")
+    tapped = callback.get("message") or {}
+    chat_id = (tapped.get("chat") or {}).get("id") or tapper
+    answer = f"{ticker}: {decision.title()}"
+    order = None
+    try:
+        if decision == "APPROVED":
+            order = trading.execute_approval(existing, db)
+            recorded = True
+        else:
+            recorded = db.update_alert_status(alert_id, decision)
+    except trading.TradeRefused as refused:
+        # Buttons stay: the operator can tap again once the cause is gone.
+        telegram.answer_callback_query(cb_id, refused.reason)
+        telegram.send_text(chat_id, f"{ticker} not bought: {refused.reason}")
+        return {"ok": True, "alertId": alert_id, "status": "PENDING"}
+    except trading.DecisionNotRecorded:
+        recorded = False
+
+    if not recorded:
+        telegram.answer_callback_query(cb_id, "Could not record that decision.")
+    elif order is not None and order["status"] != "FILLED":
+        # Another approval of this alert is mid-flight; do not claim a buy.
+        telegram.answer_callback_query(cb_id, f"{ticker}: order in progress.")
     else:
-        telegram.answer_callback_query(callback.get("id", ""), "Could not record that decision.")
+        if order is not None:
+            answer = f"Bought {order['quantity']} {ticker} (MOCK)"
+            telegram.send_text(
+                chat_id, f"Bought {order['quantity']} {ticker} at ${order['fillPrice']:.2f} (MOCK)."
+            )
+        telegram.answer_callback_query(cb_id, answer)
+        telegram.update_message_decision(tapped.get("message_id"), ticker, decision, chat_id=chat_id)
 
     return {"ok": True, "alertId": alert_id, "status": decision}
 

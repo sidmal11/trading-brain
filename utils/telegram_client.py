@@ -136,7 +136,7 @@ class TelegramClient:
         admins.update(c.strip() for c in Config.ADMIN_CHAT_IDS.split(",") if c.strip())
         return admins
 
-    def _alert_payload(self, chat_id, ticker, signal_details, analysis, alert_id):
+    def _alert_payload(self, chat_id, ticker, signal_details, analysis, alert_id, order_line=None):
         payload = {
             "chat_id": chat_id,
             "text": self.format_alert(ticker, signal_details, analysis),
@@ -147,6 +147,8 @@ class TelegramClient:
         # tap must never reach the decision path.
         if alert_id and str(chat_id) in self.admin_chat_ids:
             payload["reply_markup"] = build_approval_keyboard(alert_id, ticker)
+            if order_line:
+                payload["text"] = _truncate(f"{payload['text']}\n\n{escape(order_line)}")
         return payload
 
     def send_alert(self, ticker, signal_details, analysis, alert_id=None):
@@ -178,7 +180,7 @@ class TelegramClient:
 
         return data.get("result", {}).get("message_id")
 
-    def broadcast_alert(self, ticker, signal_details, analysis, alert_id, chat_ids):
+    def broadcast_alert(self, ticker, signal_details, analysis, alert_id, chat_ids, order_line=None):
         """Send one alert to every subscriber.
 
         Returns `(admin_message_id, blocked)`. `admin_message_id` is the id of the
@@ -193,7 +195,7 @@ class TelegramClient:
         admin_message_id = None
         blocked = []
         for chat_id in chat_ids:
-            payload = self._alert_payload(chat_id, ticker, signal_details, analysis, alert_id)
+            payload = self._alert_payload(chat_id, ticker, signal_details, analysis, alert_id, order_line)
             data = self._post("sendMessage", payload)
             if data and data.get("ok"):
                 if str(chat_id) in self.admin_chat_ids and admin_message_id is None:

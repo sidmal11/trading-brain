@@ -6,12 +6,24 @@ from utils.telegram_client import TelegramClient
 from utils.storage import alert_store, subscriber_store
 from utils.settings_store import MARKET_US_STOCKS, effective_settings
 from config import Config
+from utils.broker import whole_shares
 from graph import run_workflow
 from utils.langgraph_state import TradingBrainState
 from utils.market_clock import MIN_SESSION_FRACTION, session_fraction, trading_date
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _order_line(settings, ticker, price):
+    """What Approve would do, shown on the admin copy only."""
+    if not settings.get("tradingEnabled") or not price:
+        return None
+    dollars = settings["dollarsPerTrade"]
+    q = whole_shares(dollars, price)
+    if q == 0:
+        return f"Approve will not buy: ${dollars} is below one share at ${price:.2f} (MOCK)."
+    return f"Approve buys {q} {ticker} at about ${price:.2f}, about ${q * price:,.0f} (MOCK)."
 
 def lambda_handler(event, context):
     """Main orchestration function for the Trading Brain."""
@@ -83,7 +95,9 @@ def lambda_handler(event, context):
         message_id = None
         if settings["telegramAlertsEnabled"]:
             recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + subscribers.active_chat_ids()))
-            message_id, blocked = telegram.broadcast_alert(ticker, signal_desc, analysis, alert_id, recipients)
+            message_id, blocked = telegram.broadcast_alert(
+                ticker, signal_desc, analysis, alert_id, recipients, _order_line(settings, ticker, result.get("price"))
+            )
             for chat_id in blocked:
                 subscribers.deactivate(chat_id)
         # With Telegram off the alert is still stored, so the dashboard queue keeps it.
