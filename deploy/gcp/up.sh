@@ -19,7 +19,7 @@ BUCKET="gs://${PROJECT}-dashboard"
 SECRET="${SECRET:-trading-brain-env}"
 SA="trading-brain-vm@${PROJECT}.iam.gserviceaccount.com"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ENV_FILE="${ENV_FILE:-$HERE/../../.env}"
+ENV_FILE="${ENV_FILE:-}"
 DIST="${DIST:-$HERE/../../../frontend/dist}"
 
 G() { gcloud --project "$PROJECT" "$@"; }
@@ -59,11 +59,18 @@ else
 fi
 
 echo "==> Secrets"
-if [ ! -f "$ENV_FILE" ]; then echo "Missing $ENV_FILE"; exit 1; fi
-if G secrets describe "$SECRET" >/dev/null 2>&1; then
-  G secrets versions add "$SECRET" --data-file="$ENV_FILE"
+# With no ENV_FILE, keep the secret already in Secret Manager; fail only if it is missing.
+if [ -n "${ENV_FILE:-}" ]; then
+  if [ ! -f "$ENV_FILE" ]; then echo "Missing $ENV_FILE"; exit 1; fi
+  if G secrets describe "$SECRET" >/dev/null 2>&1; then
+    G secrets versions add "$SECRET" --data-file="$ENV_FILE"
+  else
+    G secrets create "$SECRET" --data-file="$ENV_FILE"
+  fi
+elif ! G secrets describe "$SECRET" >/dev/null 2>&1; then
+  echo "No secret $SECRET yet; set ENV_FILE to the production .env."; exit 1
 else
-  G secrets create "$SECRET" --data-file="$ENV_FILE"
+  echo "    using existing secret $SECRET"
 fi
 
 echo "==> VM"
