@@ -95,7 +95,7 @@ def test_settings_survive_a_new_store_instance(tmp_path):
 # ── Poll honours settings ─────────────────────────────────────────────────────
 
 class FakeScan:
-    def get_market_scan_results(self):
+    def get_market_scan_results(self, market="US", session_fraction=1.0, trading_date=None):
         return [{"ticker": "AAA", "volume_score": 9}, {"ticker": "BBB", "volume_score": 3}, {"ticker": "CCC", "volume_score": 1}]
 
     def get_stock_details(self, ticker):
@@ -115,6 +115,8 @@ def poll_env(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "TELEGRAM_BOT_TOKEN", "123:fake")
     monkeypatch.setattr(Config, "TELEGRAM_CHAT_ID", "1000")
     monkeypatch.setattr(Config, "ADMIN_CHAT_IDS", "")
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: 0.5)
+    monkeypatch.setattr(lambda_function, "trading_date", lambda: "2026-11-16")
     monkeypatch.setattr(lambda_function, "ApiClient", FakeScan)
     monkeypatch.setattr(lambda_function, "LlmClient", FakeLlm)
     sent = []

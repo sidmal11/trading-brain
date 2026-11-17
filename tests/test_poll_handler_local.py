@@ -22,8 +22,11 @@ SUB = "2000"
 
 
 class FakeScan:
-    def get_market_scan_results(self):
-        return [{"ticker": "NVDA", "volume_score": 9.0}, {"ticker": "LOWVOL", "volume_score": 0.1}]
+    def get_market_scan_results(self, market="US", session_fraction=1.0, trading_date=None):
+        return [
+            {"ticker": "NVDA", "volume_score": 9.0, "price": 182.4},
+            {"ticker": "LOWVOL", "volume_score": 0.1, "price": 10.0},
+        ]
 
     def get_stock_details(self, ticker):
         return {"ticker": ticker}
@@ -72,6 +75,8 @@ def poll(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "ADMIN_CHAT_IDS", "")
     monkeypatch.setattr(Config, "STRATEGY_VOLUME_THRESHOLD", 1.0)
 
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: 0.5)
+    monkeypatch.setattr(lambda_function, "trading_date", lambda: "2026-11-16")
     monkeypatch.setattr(lambda_function, "ApiClient", FakeScan)
     monkeypatch.setattr(lambda_function, "LlmClient", FakeLlm)
     http = Telegram()
@@ -107,7 +112,75 @@ def test_poll_sends_admin_copy_with_buttons_and_subscriber_copy_without(poll):
 
 
 def test_poll_with_no_scan_results_sends_nothing(poll, monkeypatch):
-    monkeypatch.setattr(FakeScan, "get_market_scan_results", lambda self: [])
+    monkeypatch.setattr(FakeScan, "get_market_scan_results", lambda self, **k: [])
     result = lambda_function.lambda_handler({}, None)
     assert result["body"] == "No signals identified."
     assert poll.sends() == []
+
+
+def test_second_poll_same_day_does_not_alert_again(poll):
+    lambda_function.lambda_handler({}, None)
+    sends_after_first = len(poll.sends())
+    result = lambda_function.lambda_handler({}, None)
+    assert result["body"] == "Processed 0 signals."
+    assert len(poll.sends()) == sends_after_first
+    assert len(alert_store().list_alerts()) == 1
+
+
+def test_next_trading_day_alerts_again(poll, monkeypatch):
+    lambda_function.lambda_handler({}, None)
+    monkeypatch.setattr(lambda_function, "trading_date", lambda: "2026-11-17")
+    lambda_function.lambda_handler({}, None)
+    assert len(alert_store().list_alerts()) == 2
+
+
+def test_already_alerted_ticker_does_not_call_the_llm(poll, monkeypatch):
+    lambda_function.lambda_handler({}, None)
+
+    def boom(self, *a, **k):
+        raise AssertionError("LLM called for a deduped ticker")
+
+    monkeypatch.setattr(FakeLlm, "analyze_stock", boom)
+    lambda_function.lambda_handler({}, None)
+
+
+def test_market_closed_skips_the_scan(poll, monkeypatch):
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: None)
+
+    def boom(self, *a, **k):
+        raise AssertionError("scan ran while the market was closed")
+
+    monkeypatch.setattr(FakeScan, "get_market_scan_results", boom)
+    result = lambda_function.lambda_handler({}, None)
+    assert result["body"] == "Market closed; skipping scan."
+    assert poll.sends() == []
+
+
+def test_first_thirty_minutes_skip_the_scan(poll, monkeypatch):
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: 10 / 390)
+    result = lambda_function.lambda_handler({}, None)
+    assert result["body"] == "Too early in the session; skipping scan."
+    assert alert_store().list_alerts() == []
+
+
+def test_alert_records_price_strategy_and_date(poll):
+    lambda_function.lambda_handler({}, None)
+    alert = alert_store().list_alerts()[0]
+    assert alert["priceAtAlert"] == 182.4
+    assert alert["strategy"] == "volume"
+    assert alert["tradingDate"] == "2026-11-16"
+
+
+def test_deduped_tickers_do_not_use_up_the_run_allowance(poll, monkeypatch):
+    from utils import settings_store
+
+    base = settings_store.defaults()
+    monkeypatch.setattr(lambda_function, "effective_settings",
+                        lambda: {**base, "maxCandidatesPerRun": 1, "volumeThreshold": 1.0})
+    lambda_function.lambda_handler({}, None)  # alerts NVDA
+    monkeypatch.setattr(FakeScan, "get_market_scan_results", lambda self, **k: [
+        {"ticker": "NVDA", "volume_score": 9.0, "price": 182.4},
+        {"ticker": "AMD", "volume_score": 5.0, "price": 120.0},
+    ])
+    lambda_function.lambda_handler({}, None)
+    assert sorted(a["ticker"] for a in alert_store().list_alerts()) == ["AMD", "NVDA"]

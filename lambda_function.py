@@ -8,6 +8,7 @@ from utils.settings_store import MARKET_US_STOCKS, effective_settings
 from config import Config
 from graph import run_workflow
 from utils.langgraph_state import TradingBrainState
+from utils.market_clock import MIN_SESSION_FRACTION, session_fraction, trading_date
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,23 +31,37 @@ def lambda_handler(event, context):
         logger.info("US stocks are not enabled in settings; skipping scan.")
         return {"statusCode": 200, "body": "US stocks disabled in settings."}
 
+    fraction = session_fraction()
+    if fraction is None:
+        logger.info("Market closed; skipping scan.")
+        return {"statusCode": 200, "body": "Market closed; skipping scan."}
+    if fraction < MIN_SESSION_FRACTION:
+        logger.info("Too early in the session; skipping scan.")
+        return {"statusCode": 200, "body": "Too early in the session; skipping scan."}
+    today = trading_date()
+
     logger.info("Starting market scan poll...")
     
     # 1. Fetch scan results
-    scan_results = api.get_market_scan_results()
+    scan_results = api.get_market_scan_results(session_fraction=fraction, trading_date=today)
     if not scan_results:
         logger.info("No scan results found.")
         return {"statusCode": 200, "body": "No signals identified."}
 
     # 2. Process potential candidates
     signals_count = 0
-    for result in scan_results[:settings["maxCandidatesPerRun"]]:
+    for result in scan_results:
+        if signals_count >= settings["maxCandidatesPerRun"]:
+            break
         ticker = result.get("ticker")
         if not ticker: continue
         
         # Simple volume breakthrough check (example logic)
         volume_score = result.get("volume_score", 0)
         if volume_score < settings["volumeThreshold"]:
+            continue
+        # One alert per ticker per trading day; checked before any details or LLM call.
+        if db.alert_exists(ticker, "volume", today):
             continue
 
         logger.info(f"Signal detected for {ticker}. Running AI analysis...")
@@ -80,7 +95,10 @@ def lambda_handler(event, context):
             signal_details=signal_desc,
             pros_cons=analysis,
             chat_id=Config.TELEGRAM_CHAT_ID or next(iter(sorted(telegram.admin_chat_ids)), None),
-            message_id=str(message_id) if message_id else None
+            message_id=str(message_id) if message_id else None,
+            price=result.get("price"),
+            strategy="volume",
+            trading_date=today,
         )
         signals_count += 1
 
