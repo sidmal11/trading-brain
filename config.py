@@ -108,6 +108,8 @@ class Config:
 
     # Read-API login. "email_otp" for a host without AWS; "cognito" or unset otherwise.
     AUTH_MODE = _get("AUTH_MODE", "").lower()
+    # Local development only: lets the read API start with no login configured.
+    ALLOW_UNAUTHENTICATED = _get("ALLOW_UNAUTHENTICATED", "").lower() == "true"
     ALLOWED_EMAILS = _get("ALLOWED_EMAILS", "")
     # Signs login codes. Required when AUTH_MODE=email_otp; generate with `openssl rand -hex 32`.
     SESSION_SECRET = _get("SESSION_SECRET", "")

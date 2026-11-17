@@ -83,6 +83,7 @@ def client(db, monkeypatch):
     monkeypatch.setattr(market_source, "quote", lambda symbol: dict(QUOTE))
     monkeypatch.setattr(market_source, "index_quote", lambda symbol: {"price": 100.0, "changePercent": 1.0})
     monkeypatch.setattr(api_main, "TelegramClient", lambda *a, **k: _NoopTelegram())
+    monkeypatch.setattr(api_main.Config, "ALLOW_UNAUTHENTICATED", True)
 
     app = api_main.create_app()
     app.dependency_overrides[api_main.get_db] = lambda: db
@@ -336,3 +337,22 @@ def test_commands_in_a_group_chat_are_ignored(client, monkeypatch):
     )
     assert response.status_code == 200
     assert subs.subscribed == []
+
+
+def test_app_refuses_to_start_without_any_login(monkeypatch):
+    monkeypatch.setattr(api_main.Config, "AUTH_MODE", "")
+    monkeypatch.setattr(api_main.Config, "ALLOW_UNAUTHENTICATED", False)
+    monkeypatch.setattr(api_main, "auth_required", lambda: False)
+    with pytest.raises(RuntimeError, match="No login is configured"):
+        api_main.create_app()
+
+
+def test_a_successful_quote_is_reused_within_the_cache_window(monkeypatch):
+    calls = []
+    monkeypatch.setattr(market_source, "_fetch_quote", lambda symbol: calls.append(symbol) or {"price": 1.0})
+    monkeypatch.setattr(market_source, "_cache", {})
+
+    market_source.quote("ZZZ")
+    market_source.quote("ZZZ")
+
+    assert calls == ["ZZZ"]

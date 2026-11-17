@@ -15,9 +15,11 @@ Routes:
     GET  /health                       unauthenticated liveness probe
 """
 
+import hmac
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -256,10 +258,25 @@ def get_futures():
     return _gather(FUTURES_UNIVERSE, _safe(build))
 
 
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _on_day(stamp, day):
+    """True when an ISO timestamp (UTC if it has no offset) falls on `day` in New York."""
+    try:
+        when = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(MARKET_TZ).date() == day
+
+
 @router.get("/market-overview")
 def get_market_overview(db=Depends(get_db)):
     alerts = db.list_alerts()
-    today = datetime.now(timezone.utc).date().isoformat()
+    # The trading day is New York's, so an alert at 9 p.m. ET counts as today, not tomorrow.
+    today = datetime.now(MARKET_TZ).date()
 
     indices = {}
     for key, symbol in (("sp500", "^GSPC"), ("nasdaq", "^IXIC"), ("vix", "^VIX")):
@@ -273,9 +290,7 @@ def get_market_overview(db=Depends(get_db)):
         "sp500": indices["sp500"],
         "nasdaq": indices["nasdaq"],
         "vix": indices["vix"],
-        "totalBreakthroughsToday": sum(
-            1 for alert in alerts if str(alert.get("timestamp") or "").startswith(today)
-        ),
+        "totalBreakthroughsToday": sum(1 for alert in alerts if _on_day(alert.get("timestamp"), today)),
         "pendingApprovalsCount": sum(1 for alert in alerts if alert.get("status") == "PENDING"),
     }
 
@@ -400,7 +415,7 @@ def telegram_webhook(
         logger.error("TELEGRAM_WEBHOOK_SECRET is unset; refusing webhook delivery.")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Webhook not configured.")
 
-    if x_telegram_bot_api_secret_token != expected:
+    if not hmac.compare_digest(x_telegram_bot_api_secret_token.encode(), expected.encode()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bad webhook secret.")
 
     message = update.get("message")
@@ -485,6 +500,12 @@ def create_app() -> FastAPI:
             raise RuntimeError("AUTH_MODE=email_otp needs SESSION_SECRET of at least 32 characters.")
         if not Config.ALLOWED_EMAILS.strip():
             raise RuntimeError("AUTH_MODE=email_otp needs ALLOWED_EMAILS.")
+    # Fail closed: with no login configured, every data route would be open to anyone who can reach the server.
+    if not auth_required() and not Config.ALLOW_UNAUTHENTICATED:
+        raise RuntimeError(
+            "No login is configured. Set AUTH_MODE=email_otp or COGNITO_USER_POOL_ID, "
+            "or ALLOW_UNAUTHENTICATED=true for local development only."
+        )
 
     app = FastAPI(
         title="Trading Brain API",
@@ -508,12 +529,6 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(router)
     app.include_router(webhook_router)
-
-    if not auth_required():
-        logger.warning(
-            "COGNITO_USER_POOL_ID is unset: the API is serving every request "
-            "unauthenticated. Do not run this configuration where it is reachable."
-        )
 
     return app
 

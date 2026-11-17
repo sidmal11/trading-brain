@@ -30,6 +30,7 @@ def app_env(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "STORAGE_BACKEND", "sqlite")
     monkeypatch.setattr(Config, "SQLITE_PATH", str(tmp_path / "s.db"))
     monkeypatch.setattr(Config, "AUTH_MODE", "")
+    monkeypatch.setattr(Config, "ALLOW_UNAUTHENTICATED", True)
     monkeypatch.setattr(api_main, "_db_client", None)
     monkeypatch.setattr(api_main, "_subscriber_store", None)
     return TestClient(api_main.create_app())

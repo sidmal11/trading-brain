@@ -12,8 +12,10 @@ that row and serves the rest, which the UI then reports as partial rather than
 unavailable.
 """
 
+import copy
 import logging
 import re
+import time
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -194,7 +196,35 @@ def _history_rows(ticker_obj, period, interval):
     return rows
 
 
+_CACHE_TTL_SECONDS = 60
+# shortcut: keeps every symbol it has seen; fine for a few hundred tickers, add a size cap if the universe grows.
+_cache = {}
+
+
+def _cached(key, fetch):
+    """Reuse a successful read for a minute, so each 30-second dashboard poll does not hit Yahoo again.
+
+    Failures (None) are not stored, so the next poll retries them.
+    """
+    now = time.time()
+    hit = _cache.get(key)
+    if hit and hit[0] > now:
+        return copy.deepcopy(hit[1])
+    value = fetch()
+    if value is not None:
+        _cache[key] = (now + _CACHE_TTL_SECONDS, copy.deepcopy(value))
+    return value
+
+
 def quote(symbol):
+    return _cached(("quote", symbol), lambda: _fetch_quote(symbol))
+
+
+def index_quote(symbol):
+    return _cached(("index", symbol), lambda: _fetch_index(symbol))
+
+
+def _fetch_quote(symbol):
     """Fetch the fields a signal card needs, or None if the symbol will not resolve."""
     yf = _yfinance()
     if yf is None:
@@ -234,7 +264,7 @@ def quote(symbol):
     }
 
 
-def index_quote(symbol):
+def _fetch_index(symbol):
     """Last price and percent change for an index, or None."""
     yf = _yfinance()
     if yf is None:

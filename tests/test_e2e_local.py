@@ -90,6 +90,7 @@ def world(request, monkeypatch, tmp_path):
         monkeypatch.setattr(Config, "TELEGRAM_WEBHOOK_SECRET", SECRET)
         monkeypatch.setattr(Config, "DYNAMODB_TABLE_NAME", "TradingAlerts")
         monkeypatch.setattr(Config, "TELEGRAM_SUBSCRIBERS_TABLE", "TelegramSubscribers")
+        monkeypatch.setattr(Config, "ALLOW_UNAUTHENTICATED", True)
         monkeypatch.setattr(api_main, "_db_client", None)
         monkeypatch.setattr(api_main, "_subscriber_store", None)
 
