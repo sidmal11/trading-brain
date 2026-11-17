@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from config import Config
 from utils import news_client
+from utils.broker import get_broker
 from utils.db_client import VALID_STATUSES, DbClient
 from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import TelegramClient, parse_callback
@@ -501,6 +502,7 @@ def _handle_command(message, subscribers):
 # ── Application ───────────────────────────────────────────────────────────────
 
 def create_app() -> FastAPI:
+    get_broker(lambda ticker: None)  # refuses any broker other than the mock
     # Refuse to start with email login half-configured: a missing secret or an
     # empty allow-list would leave the dashboard open or unable to sign anyone in.
     if email_otp_enabled():
