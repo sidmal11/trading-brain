@@ -26,7 +26,7 @@ def test_closed_trade_profit_and_hindsight():
     assert t == {"orderId": 1, "ticker": "AAPL", "quantity": 2, "buyPrice": 100.0, "buyDate": "2026-11-10",
                  "sellPrice": 110.0, "sellDate": "2026-11-12", "exitPrice": 110.0, "open": False,
                  "pnl": 20.0, "pnlPercent": 10.0, "bestHigh": 115.0, "bestHighDate": "2026-11-11",
-                 "bestExitPnl": 30.0, "missedPnl": 10.0}
+                 "bestExitPnl": 30.0, "missedPnl": 10.0, "priceAsOf": None}
 
 
 def test_open_trade_uses_current_price_and_bars_to_date():
@@ -77,7 +77,8 @@ def test_missing_price_and_bars_give_nulls():
     # MSFT has bars but no current price: hindsight works, missedPnl needs pnl.
     assert msft["bestHigh"] == 60.0 and msft["bestExitPnl"] == 20.0 and msft["missedPnl"] is None
     totals = report["totals"]
-    assert totals["unrealizedPnl"] == 0.0 and totals["moneyIn"] == 200.0 and totals["currentValue"] == 0.0
+    # An open trade without a price makes the open-trade sums unknown, not partial.
+    assert totals["unrealizedPnl"] is None and totals["currentValue"] is None and totals["moneyIn"] == 200.0
 
 
 def test_totals():
@@ -88,6 +89,33 @@ def test_totals():
     totals = trades_report(orders, {"NVDA": 156.67, "AAPL": 999.0, "MSFT": 999.0}, {})["totals"]
     assert totals == {"moneyIn": 461.1, "currentValue": 470.01, "realizedPnl": 12.5, "unrealizedPnl": 8.91,
                       "closedTrades": 2, "winRate": 50.0, "averageWin": 20.0, "averageLoss": -7.5}
+
+
+def test_break_even_is_neither_win_nor_loss():
+    even = _newest_first(_order(1, "BUY", 100.0, "2026-11-10"), _order(2, "SELL", 100.0, "2026-11-11"))
+    totals = trades_report(even, {}, {})["totals"]
+    assert totals["closedTrades"] == 1 and totals["winRate"] is None
+    mixed = _newest_first(_order(1, "BUY", 100.0, "2026-11-10"), _order(2, "SELL", 100.0, "2026-11-11"),
+                          _order(3, "BUY", 100.0, "2026-11-10", ticker="MSFT"),
+                          _order(4, "SELL", 110.0, "2026-11-11", ticker="MSFT"),
+                          _order(5, "BUY", 100.0, "2026-11-10", ticker="NVDA"),
+                          _order(6, "SELL", 90.0, "2026-11-11", ticker="NVDA"))
+    totals = trades_report(mixed, {}, {})["totals"]
+    assert totals["closedTrades"] == 3 and totals["winRate"] == 50.0
+
+
+def test_price_as_of_is_the_newest_bar_date():
+    orders = _newest_first(_order(1, "BUY", 100.0, "2026-11-10"), _order(2, "BUY", 50.0, "2026-11-10", ticker="MSFT"),
+                           _order(3, "BUY", 10.0, "2026-11-10", ticker="NVDA"),
+                           _order(4, "SELL", 12.0, "2026-11-11", ticker="NVDA"))
+    bars = {"AAPL": [("2026-11-10", 104.0, 99.0, 103.0), ("2026-11-13", 106.0, 101.0, 105.0)],
+            "NVDA": [("2026-11-10", 11.0, 9.0, 10.0), ("2026-11-13", 13.0, 11.0, 12.5)]}
+    nvda, msft, aapl = trades_report(orders, {"AAPL": 105.0, "NVDA": 12.5}, bars)["trades"]
+    assert (aapl["priceAsOf"], msft["priceAsOf"], nvda["priceAsOf"]) == ("2026-11-13", None, None)
+    alerts = [_alert("a1", "AAPL", "PENDING", "volume", "2026-11-10", 100.0),
+              _alert("a2", "MSFT", "PENDING", "volume", "2026-11-10", 50.0)]
+    items = recommendations_report(alerts, {"AAPL": 105.0}, bars)["items"]
+    assert {i["ticker"]: i["priceAsOf"] for i in items} == {"AAPL": "2026-11-13", "MSFT": None}
 
 
 def test_no_trades_gives_zero_totals_and_null_rates():
@@ -125,7 +153,8 @@ def test_recommendations_items_and_groups():
     assert items[2] == {"alertId": "a1", "ticker": "AAPL", "strategy": "volume", "decision": "APPROVED",
                         "tradingDate": "2026-11-10", "priceAtAlert": 100.0, "priceNow": 110.0,
                         "changePercent": 10.0, "bestPrice": 112.0, "bestDate": "2026-11-11",
-                        "worstPrice": 98.0, "worstDate": "2026-11-10"}
+                        "worstPrice": 98.0, "worstDate": "2026-11-10",
+                        "priceAsOf": "2026-11-11"}
     assert (items[0]["changePercent"], items[0]["bestPrice"], items[0]["worstPrice"], items[0]["worstDate"]) == \
         (-5.0, 201.0, 188.5, "2026-11-13")
     assert items[1]["priceNow"] is None and items[1]["changePercent"] is None

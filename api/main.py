@@ -373,21 +373,14 @@ def get_positions():
 def get_performance():
     # limit=-1 is SQLite for "no limit": the report needs every order, not the newest 200
     orders = trading.get_trades_store().list_orders(limit=-1) if Config.STORAGE_BACKEND == "sqlite" else []
-    alerts = get_db().list_alerts()
-    tickers = sorted({o["ticker"] for o in orders} | {a["ticker"] for a in alerts})
-    dates = [o["tradingDate"] for o in orders if o.get("tradingDate")]
-    dates += [a["tradingDate"] for a in alerts if a.get("tradingDate")]
-    bars = performance.daily_bars(tickers, min(dates)) if dates else {}
-    # Prices come from the bars (no extra Yahoo calls). Only open positions without bars fall back to a quote.
+    alerts = get_db().list_alerts(limit=10**9)
+    # Only what the report scores: filled orders and alerts with a price and date.
+    needed = [o for o in orders if o["status"] == "FILLED"]
+    needed += [a for a in alerts if a.get("priceAtAlert") is not None and a.get("tradingDate")]
+    dates = [x["tradingDate"] for x in needed if x.get("tradingDate")]
+    bars = performance.daily_bars({x["ticker"] for x in needed}, min(dates)) if dates else {}
+    # Prices come only from the bars: no un-timed quote calls, so a ticker without bars has null prices.
     price_now = {t: b[-1][3] for t, b in bars.items() if b}
-    sold = {}
-    for o in orders:
-        if o["status"] == "FILLED" and o["side"] == "SELL":
-            sold[o["ticker"]] = max(sold.get(o["ticker"], 0), o["id"])
-    held = {o["ticker"] for o in orders if o["status"] == "FILLED" and o["side"] == "BUY"
-            and o["id"] > sold.get(o["ticker"], 0)}
-    for t in sorted(held - price_now.keys())[:5]:  # at most 5 slow quotes per request
-        price_now[t] = trading.price_of(t)
     return {"broker": "mock", **performance.trades_report(orders, price_now, bars),
             "recommendations": performance.recommendations_report(alerts, price_now, bars)}
 

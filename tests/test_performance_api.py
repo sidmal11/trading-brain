@@ -114,15 +114,56 @@ def test_price_now_comes_from_the_newest_bar_close(env, monkeypatch):
     assert body["recommendations"]["items"][0]["priceNow"] == 156.0
 
 
-def test_price_of_fallback_only_for_open_positions_without_bars(env, monkeypatch):
-    calls = []
-    monkeypatch.setattr(trading, "price_of", lambda t: calls.append(t) or 99.0)
+def test_route_never_calls_price_of(env, monkeypatch):
+    def boom(t):
+        raise AssertionError("price_of must not be called")
+
+    monkeypatch.setattr(trading, "price_of", boom)
     monkeypatch.setattr(performance, "daily_bars", lambda tickers, start: {})
-    SqliteStore(Config.SQLITE_PATH).save_alert("a2", "ZZZ", "m", "p", price=10.0, trading_date="2026-11-17")
     body = env.get("/api/performance").json()
-    assert calls == ["NVDA"]  # ZZZ has an alert but no position
-    z = [i for i in body["recommendations"]["items"] if i["ticker"] == "ZZZ"][0]
-    assert z["priceNow"] is None and z["changePercent"] is None
+    t = body["trades"][0]
+    assert t["exitPrice"] is None and t["priceAsOf"] is None
+    assert body["totals"]["currentValue"] is None and body["totals"]["unrealizedPnl"] is None
+
+
+def test_route_reads_every_alert(env):
+    store = SqliteStore(Config.SQLITE_PATH)
+    for i in range(201):
+        store.save_alert(f"x{i}", "NVDA", "m", "p", price=150.0, trading_date="2026-11-17")
+    assert len(env.get("/api/performance").json()["recommendations"]["items"]) == 202
+
+
+def test_route_requests_only_scored_and_filled_tickers(env, monkeypatch):
+    asked = []
+    monkeypatch.setattr(performance, "daily_bars", lambda tickers, start: asked.append((sorted(tickers), start)) or {})
+    store = SqliteStore(Config.SQLITE_PATH)
+    store.save_alert("old", "OLD", "m", "p")  # no price or date: not scored
+    store.save_alert("nodate", "NOD", "m", "p", price=1.0)
+    trading.get_trades_store().claim_buy("a9", "PND", 1, "2026-11-01")  # pending, never filled
+    env.get("/api/performance")
+    assert asked == [(["NVDA"], "2026-11-17")]
+
+
+def test_daily_bars_downloads_with_threads(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(performance.yf, "download", lambda *a, **k: seen.update(k) or _frame())
+    performance.daily_bars(["AAA", "BBB"], "2026-11-17")
+    assert seen["threads"] is True
+
+
+def test_all_nan_result_is_cached_for_60s_only(monkeypatch):
+    idx = pd.to_datetime(["2026-11-17"])
+    nan_frame = pd.DataFrame({("AAA", k): [float("nan")] for k in ("High", "Low", "Close")}, index=idx)
+    calls, now = [], [1000.0]
+    monkeypatch.setattr(performance.yf, "download", lambda *a, **k: calls.append(1) or nan_frame)
+    monkeypatch.setattr(performance.time, "monotonic", lambda: now[0])
+    assert performance.daily_bars(["AAA"], "2026-11-17") == {}
+    now[0] += 59
+    performance.daily_bars(["AAA"], "2026-11-17")
+    assert len(calls) == 1
+    now[0] += 2
+    performance.daily_bars(["AAA"], "2026-11-17")
+    assert len(calls) == 2
 
 
 def test_failed_download_is_not_retried_within_60s(monkeypatch):

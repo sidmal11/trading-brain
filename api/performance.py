@@ -28,6 +28,11 @@ def _extreme(bars, start, end, col, pick):
     return bar[col], bar[0]
 
 
+def _as_of(price, ticker_bars):
+    """Date of the bar the current price came from (the route takes it from the newest bar's close)."""
+    return ticker_bars[-1][0] if price is not None and ticker_bars else None
+
+
 def _mean(values):
     return sum(values) / len(values) if values else None
 
@@ -55,18 +60,20 @@ def trades_report(orders, price_now, bars):
         t["bestHigh"], t["bestHighDate"] = _extreme(bars.get(t["ticker"]), t["buyDate"], t["sellDate"], 1, max)
         t["bestExitPnl"] = None if t["bestHigh"] is None else (t["bestHigh"] - buy) * qty
         t["missedPnl"] = None if t["bestExitPnl"] is None or t["pnl"] is None else t["bestExitPnl"] - t["pnl"]
+        t["priceAsOf"] = _as_of(exit_price, bars.get(t["ticker"])) if t["open"] else None
 
     closed = [t["pnl"] for t in trades if not t["open"]]
     open_trades = [t for t in trades if t["open"]]
-    valued = [t for t in open_trades if t["exitPrice"] is not None]
+    priced = all(t["exitPrice"] is not None for t in open_trades)  # one unpriced open trade: sums unknown
     wins, losses = [p for p in closed if p > 0], [p for p in closed if p < 0]
     totals = {
         "moneyIn": _r(sum(t["buyPrice"] * t["quantity"] for t in open_trades)),
-        "currentValue": _r(sum(t["exitPrice"] * t["quantity"] for t in valued)),
+        "currentValue": _r(sum(t["exitPrice"] * t["quantity"] for t in open_trades)) if priced else None,
         "realizedPnl": _r(sum(closed)),
-        "unrealizedPnl": _r(sum(t["pnl"] for t in valued)),
+        "unrealizedPnl": _r(sum(t["pnl"] for t in open_trades)) if priced else None,
         "closedTrades": len(closed),
-        "winRate": _r(len(wins) / len(closed) * 100) if closed else None,
+        # break-even trades are neither winners nor losers
+        "winRate": _r(len(wins) / (len(wins) + len(losses)) * 100) if wins or losses else None,
         "averageWin": _r(_mean(wins)),
         "averageLoss": _r(_mean(losses)),
     }
@@ -95,7 +102,8 @@ def recommendations_report(alerts, price_now, bars):
         items.append({"alertId": a["alertId"], "ticker": a["ticker"], "strategy": a.get("strategy"),
                       "decision": a.get("status"), "tradingDate": start, "priceAtAlert": _r(at),
                       "priceNow": _r(now), "changePercent": _r(change), "bestPrice": _r(best),
-                      "bestDate": best_date, "worstPrice": _r(worst), "worstDate": worst_date, "_change": change})
+                      "bestDate": best_date, "worstPrice": _r(worst), "worstDate": worst_date,
+                      "priceAsOf": _as_of(now, bars.get(a["ticker"])), "_change": change})
     items.sort(key=lambda i: i["tradingDate"], reverse=True)
     by_decision, by_strategy = _groups(items, "decision"), _groups(items, "strategy")
     for i in items:
@@ -116,7 +124,7 @@ def daily_bars(tickers, start):
         return hit[1]
     try:
         # timeout keeps a slow Yahoo inside the dashboard's 8s request budget
-        frame = yf.download(tickers, start=start, interval="1d", group_by="ticker", threads=False,
+        frame = yf.download(tickers, start=start, interval="1d", group_by="ticker", threads=True,
                             progress=False, auto_adjust=False, timeout=5)
         result = {}
         for t in tickers:
@@ -137,5 +145,6 @@ def daily_bars(tickers, start):
         logger.exception("Yahoo daily bars failed")
         _bars_cache[key] = (time.monotonic(), {}, _FAILED_TTL)  # do not make every page load wait out Yahoo
         return {}
-    _bars_cache[key] = (time.monotonic(), result, _BARS_TTL)
+    # no bars for any ticker (e.g. an outage returned as an all-NaN frame) counts as a failure
+    _bars_cache[key] = (time.monotonic(), result, _BARS_TTL if result else _FAILED_TTL)
     return result
