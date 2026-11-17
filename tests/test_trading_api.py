@@ -82,6 +82,15 @@ def test_approve_buys_whole_shares_at_the_quote(env):
     assert len(_NoopTelegram.calls) == 1
 
 
+def test_approving_a_macd_alert_carries_its_stop_and_target_to_positions(env):
+    env.alerts.save_alert("m1", "MSFT", "MACD", "x", trading_date=TODAY, strategy="macd",
+                          signal_type="MACD_CROSSOVER", stop=170.0, target=200.0)
+    order = env.approve("m1").json()["order"]
+    assert (order["stopPrice"], order["targetPrice"]) == (170.0, 200.0)
+    [position] = env.client.get("/api/positions").json()["positions"]
+    assert (position["stopPrice"], position["targetPrice"]) == (170.0, 200.0)
+
+
 def test_second_approval_places_no_second_order(env):
     first, second = env.approve(), env.approve()
     assert first.status_code == second.status_code == 200

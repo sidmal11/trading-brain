@@ -68,6 +68,10 @@ def _buy_refusal(alert, today, store, settings, price, quantity):
     return None
 
 
+def _num(value):
+    return None if value is None else float(value)  # DynamoDB hands back Decimal
+
+
 def execute_approval(alert, db):
     """Buy for an approved alert. Returns the order, or None when trading is off."""
     alert_id, ticker = alert["alertId"], alert["ticker"]
@@ -80,7 +84,8 @@ def execute_approval(alert, db):
     quantity = whole_shares(settings["dollarsPerTrade"], price)
     today = trading_date()
     store = get_trades_store()
-    order, created = store.claim_buy(alert_id, ticker, quantity, today, strategy=alert.get("strategy"))
+    order, created = store.claim_buy(alert_id, ticker, quantity, today, strategy=alert.get("strategy"),
+                                     stop_price=_num(alert.get("stopPrice")), target_price=_num(alert.get("targetPrice")))
     if not created:
         # Another approval owns this order; never fill or fail it from here.
         if order["status"] == "FILLED":

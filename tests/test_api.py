@@ -153,6 +153,31 @@ def test_signals_match_the_stocksignal_contract(client):
     assert signal["alertStatus"] == "PENDING"
 
 
+CHECKLIST = [{"key": k, "label": k, "passed": True, "points": 20, "detail": "d"}
+             for k in ("uptrend", "macd", "volume", "price_action", "reward_risk")]
+
+
+def test_checklist_alert_reports_stored_confidence_and_conditions(db, client):
+    from decimal import Decimal
+    db.alerts[0].update(signalType="MACD_CROSSOVER", strategy="macd", confidence=Decimal("85"),
+                        checklist=[{**c, "points": Decimal("20")} for c in CHECKLIST],
+                        entryPrice=Decimal("100.5"), stopPrice=Decimal("95"), targetPrice=Decimal("108.75"))
+    signal = client.get("/api/signals").json()[0]
+    assert signal["signalType"] == "MACD_CROSSOVER" and signal["strategy"] == "macd"
+    assert signal["aiAnalysis"]["confidenceScore"] == 85
+    assert [c["key"] for c in signal["conditions"]] == ["uptrend", "macd", "volume", "price_action", "reward_risk"]
+    assert signal["conditions"][0]["points"] == 20
+    assert (signal["entryPrice"], signal["stopPrice"], signal["targetPrice"]) == (100.5, 95.0, 108.75)
+
+
+def test_legacy_alert_keeps_pros_cons_score_and_empty_conditions(client):
+    signal = client.get("/api/signals").json()[0]
+    assert signal["conditions"] == [] and signal["strategy"] is None
+    assert (signal["entryPrice"], signal["stopPrice"], signal["targetPrice"]) == (None, None, None)
+    assert signal["aiAnalysis"]["confidenceScore"] == market_source._confidence(
+        ["Strong demand", "Margin expansion"], ["Rich valuation"])
+
+
 def test_signal_parses_pros_and_cons_out_of_the_llm_prose(client):
     analysis = client.get("/api/signals").json()[0]["aiAnalysis"]
     assert analysis["bullishCatalysts"] == ["Strong demand", "Margin expansion"]

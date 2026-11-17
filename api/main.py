@@ -22,6 +22,7 @@ import hmac
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response, status
@@ -130,6 +131,17 @@ def get_subscribers():
 
 # ── Assembly ──────────────────────────────────────────────────────────────────
 
+def _plain(value):
+    """DynamoDB returns numbers as Decimal; the JSON contract wants plain numbers."""
+    if isinstance(value, Decimal):
+        return float(value) if value % 1 else int(value)
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    return value
+
+
 def _signal_from_alert(alert):
     """Turn a stored alert plus a live quote into a StockSignal.
 
@@ -173,13 +185,19 @@ def _signal_from_alert(alert):
         "relativeStrengthRank": int(alert.get("relativeStrengthRank") or 0),
         "signalType": alert.get("signalType") or "VOLUME_BREAKTHROUGH",
         "signalDescription": alert.get("signalDetails") or "",
+        "strategy": alert.get("strategy"),
+        "conditions": _plain(alert.get("checklist") or []),
+        "entryPrice": _plain(alert.get("entryPrice")),
+        "stopPrice": _plain(alert.get("stopPrice")),
+        "targetPrice": _plain(alert.get("targetPrice")),
         "alertStatus": alert.get("status") or "PENDING",
         "detectedAt": alert.get("timestamp") or "",
         "aiAnalysis": {
             "bullishCatalysts": pros,
             "bearishRisks": cons,
             "summary": summary or analysis,
-            "confidenceScore": market_source._confidence(pros, cons),
+            "confidenceScore": _plain(alert["confidence"]) if alert.get("confidence") is not None
+                else market_source._confidence(pros, cons),
             "sentiment": market_source._sentiment(pros, cons),
         },
         "chartData": chart,
