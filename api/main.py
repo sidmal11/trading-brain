@@ -33,7 +33,7 @@ from utils.db_client import VALID_STATUSES, DbClient
 from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import TelegramClient, parse_callback
 
-from . import market_source
+from . import market_source, top_stocks
 from .auth import auth_required, email_otp_enabled, get_otp_service, require_user
 
 logger = logging.getLogger(__name__)
@@ -293,6 +293,11 @@ def get_market_overview(db=Depends(get_db)):
         "totalBreakthroughsToday": sum(1 for alert in alerts if _on_day(alert.get("timestamp"), today)),
         "pendingApprovalsCount": sum(1 for alert in alerts if alert.get("status") == "PENDING"),
     }
+
+
+@router.get("/top-stocks")
+def get_top_stocks():
+    return top_stocks.top_stock_groups()
 
 
 @router.get("/alerts")

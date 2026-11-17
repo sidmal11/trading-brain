@@ -271,7 +271,7 @@ def _fetch_index(symbol):
         return None
 
     try:
-        frame = yf.Ticker(symbol).history(period="2d", interval="1d")
+        frame = yf.Ticker(symbol).history(period="5d", interval="1d")
     except Exception as e:
         logger.warning("Index lookup failed for %s: %s", symbol, type(e).__name__)
         return None
@@ -279,7 +279,11 @@ def _fetch_index(symbol):
     if frame is None or frame.empty:
         return None
 
-    closes = [float(value) for value in frame["Close"].tolist()]
+    # Yahoo adds a placeholder row for today with no close (NaN) until the session prints;
+    # NaN is not valid JSON, so keep only real closes.
+    closes = [float(value) for value in frame["Close"].dropna().tolist()]
+    if not closes:
+        return None
     last = closes[-1]
     previous = closes[-2] if len(closes) > 1 else last
     change_percent = ((last - previous) / previous * 100) if previous else 0.0
