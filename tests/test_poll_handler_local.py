@@ -22,7 +22,10 @@ SUB = "2000"
 
 
 class FakeScan:
+    last_kwargs: dict = {}
+
     def get_market_scan_results(self, market="US", session_fraction=1.0, trading_date=None):
+        FakeScan.last_kwargs = {"session_fraction": session_fraction, "trading_date": trading_date}
         return [
             {"ticker": "NVDA", "volume_score": 9.0, "price": 182.4},
             {"ticker": "LOWVOL", "volume_score": 0.1, "price": 10.0},
@@ -84,6 +87,11 @@ def poll(monkeypatch, tmp_path):
 
     subscriber_store().subscribe(SUB)
     return http
+
+
+def test_poll_passes_clock_values_to_the_scan(poll):
+    lambda_function.lambda_handler({}, None)
+    assert FakeScan.last_kwargs == {"session_fraction": 0.5, "trading_date": "2026-11-16"}
 
 
 def test_poll_stores_only_signals_above_threshold(poll):

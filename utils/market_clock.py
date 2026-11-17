@@ -19,7 +19,8 @@ def trading_date(now: datetime | None = None) -> str:
 def session_fraction(now: datetime | None = None) -> float | None:
     """Fraction of the regular session elapsed, in (0, 1); None when closed.
 
-    shortcut: holidays are unknown, so a weekday holiday reads as open; add a calendar if it matters.
+    shortcut: holidays and half days are unknown, so a weekday holiday reads as open and a 13:00 ET early close
+    counts as a full session; add a calendar if it matters.
     """
     et = _eastern(now)
     if et.weekday() >= 5:
