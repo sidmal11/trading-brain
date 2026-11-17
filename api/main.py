@@ -378,7 +378,16 @@ def get_performance():
     dates = [o["tradingDate"] for o in orders if o.get("tradingDate")]
     dates += [a["tradingDate"] for a in alerts if a.get("tradingDate")]
     bars = performance.daily_bars(tickers, min(dates)) if dates else {}
-    price_now = {t: trading.price_of(t) for t in tickers}
+    # Prices come from the bars (no extra Yahoo calls). Only open positions without bars fall back to a quote.
+    price_now = {t: b[-1][3] for t, b in bars.items() if b}
+    sold = {}
+    for o in orders:
+        if o["status"] == "FILLED" and o["side"] == "SELL":
+            sold[o["ticker"]] = max(sold.get(o["ticker"], 0), o["id"])
+    held = {o["ticker"] for o in orders if o["status"] == "FILLED" and o["side"] == "BUY"
+            and o["id"] > sold.get(o["ticker"], 0)}
+    for t in sorted(held - price_now.keys())[:5]:  # at most 5 slow quotes per request
+        price_now[t] = trading.price_of(t)
     return {"broker": "mock", **performance.trades_report(orders, price_now, bars),
             "recommendations": performance.recommendations_report(alerts, price_now, bars)}
 

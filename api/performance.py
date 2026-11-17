@@ -103,8 +103,8 @@ def recommendations_report(alerts, price_now, bars):
     return {"items": items, "byDecision": by_decision, "byStrategy": by_strategy}
 
 
-_BARS_TTL = 300
-_bars_cache = {}  # (sorted tickers, start) -> (monotonic time, result)
+_BARS_TTL, _FAILED_TTL = 300, 60
+_bars_cache = {}  # (sorted tickers, start) -> (monotonic time, result, ttl)
 
 
 def daily_bars(tickers, start):
@@ -112,7 +112,7 @@ def daily_bars(tickers, start):
     tickers = sorted(set(tickers))
     key = (tuple(tickers), start)
     hit = _bars_cache.get(key)
-    if hit and time.monotonic() - hit[0] < _BARS_TTL:
+    if hit and time.monotonic() - hit[0] < hit[2]:
         return hit[1]
     try:
         # timeout keeps a slow Yahoo inside the dashboard's 8s request budget
@@ -129,10 +129,13 @@ def daily_bars(tickers, start):
             else:
                 continue
             sub = sub[["High", "Low", "Close"]].dropna()
+            if sub.empty:
+                continue
             result[t] = [(d.strftime("%Y-%m-%d"), float(h), float(lo), float(c))
                          for d, h, lo, c in zip(sub.index, sub["High"], sub["Low"], sub["Close"])]
     except Exception:
         logger.exception("Yahoo daily bars failed")
+        _bars_cache[key] = (time.monotonic(), {}, _FAILED_TTL)  # do not make every page load wait out Yahoo
         return {}
-    _bars_cache[key] = (time.monotonic(), result)
+    _bars_cache[key] = (time.monotonic(), result, _BARS_TTL)
     return result

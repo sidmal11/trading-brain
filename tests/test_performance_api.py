@@ -46,9 +46,9 @@ def test_performance_route_shape(env):
     assert set(body) == {"broker", "totals", "trades", "recommendations"}
     assert body["broker"] == "mock"
     t = body["trades"][0]
-    assert (t["ticker"], t["open"], t["exitPrice"], t["pnl"]) == ("NVDA", True, 156.67, 8.91)
+    assert (t["ticker"], t["open"], t["exitPrice"], t["pnl"]) == ("NVDA", True, 156.0, 6.9)
     assert (t["bestHigh"], t["bestHighDate"], t["bestExitPnl"]) == (158.2, "2026-11-18", 13.5)
-    assert body["totals"]["unrealizedPnl"] == 8.91
+    assert body["totals"]["unrealizedPnl"] == 6.9
     assert body["recommendations"]["items"][0]["bestPrice"] == 158.2
 
 
@@ -102,3 +102,48 @@ def test_daily_bars_caches_for_five_minutes(monkeypatch):
     performance.daily_bars(["AAA"], "2026-11-17")
     performance.daily_bars(["AAA"], "2026-11-17")
     assert len(calls) == 1
+
+
+def test_price_now_comes_from_the_newest_bar_close(env, monkeypatch):
+    def boom(t):
+        raise AssertionError("price_of must not be called")
+
+    monkeypatch.setattr(trading, "price_of", boom)
+    body = env.get("/api/performance").json()
+    assert body["trades"][0]["exitPrice"] == 156.0
+    assert body["recommendations"]["items"][0]["priceNow"] == 156.0
+
+
+def test_price_of_fallback_only_for_open_positions_without_bars(env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(trading, "price_of", lambda t: calls.append(t) or 99.0)
+    monkeypatch.setattr(performance, "daily_bars", lambda tickers, start: {})
+    SqliteStore(Config.SQLITE_PATH).save_alert("a2", "ZZZ", "m", "p", price=10.0, trading_date="2026-11-17")
+    body = env.get("/api/performance").json()
+    assert calls == ["NVDA"]  # ZZZ has an alert but no position
+    z = [i for i in body["recommendations"]["items"] if i["ticker"] == "ZZZ"][0]
+    assert z["priceNow"] is None and z["changePercent"] is None
+
+
+def test_failed_download_is_not_retried_within_60s(monkeypatch):
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(performance.yf, "download", boom)
+    assert performance.daily_bars(["AAA"], "2026-11-17") == {}
+    assert performance.daily_bars(["AAA"], "2026-11-17") == {}
+    assert len(calls) == 1
+
+
+def test_all_nan_ticker_is_absent(monkeypatch):
+    idx = pd.to_datetime(["2026-11-17"])
+    nan = [float("nan")]
+    frame = pd.DataFrame({(t, k): v for t in ("AAA", "BBB") for k, v in
+                          (("High", nan), ("Low", nan), ("Close", nan) if t == "AAA" else ("Close", [1.0]))},
+                         index=idx)
+    frame[("BBB", "High")], frame[("BBB", "Low")] = 2.0, 1.0
+    monkeypatch.setattr(performance.yf, "download", lambda *a, **k: frame)
+    assert list(performance.daily_bars(["AAA", "BBB"], "2026-11-17")) == ["BBB"]
