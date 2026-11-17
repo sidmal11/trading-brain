@@ -57,29 +57,44 @@ class TradesStore:
     def claim_buy(self, alert_id, ticker, quantity, trading_date, strategy=None, stop_price=None, target_price=None):
         """Insert a PENDING buy. Returns (order, True), or (existing live buy, False) if one exists."""
         with self._lock:
-            try:
+            for attempt in range(2):
+                try:
+                    with self._connect() as conn:
+                        return self._insert(conn, alert_id, ticker, "BUY", quantity, trading_date,
+                                            strategy, stop_price, target_price), True
+                except sqlite3.IntegrityError as e:
+                    # The partial unique index is the only constraint on alert_id.
+                    if "orders.alert_id" not in str(e) or attempt == 1:
+                        raise
                 with self._connect() as conn:
-                    return self._insert(conn, alert_id, ticker, "BUY", quantity, trading_date,
-                                        strategy, stop_price, target_price), True
-            except sqlite3.IntegrityError:
-                with self._connect() as conn:
-                    row = conn.execute(
-                        f"{_SELECT} WHERE alert_id = ? AND side = 'BUY' AND status != 'FAILED'", (alert_id,)
-                    ).fetchone()
-                return _wire(row), False
+                    existing = self._live_buy(conn, alert_id)
+                if existing:
+                    return existing, False
+                # The conflicting buy was marked FAILED in between: retry the insert once.
+
+    def _live_buy(self, conn, alert_id):
+        return _wire(conn.execute(
+            f"{_SELECT} WHERE alert_id = ? AND side = 'BUY' AND status != 'FAILED'", (alert_id,)
+        ).fetchone())
 
     def claim_sell(self, ticker, quantity, trading_date):
         with self._lock, self._connect() as conn:
             return self._insert(conn, None, ticker, "SELL", quantity, trading_date, None, None, None)
 
     def fill(self, order_id, fill_price):
+        """Mark a PENDING order FILLED. A non-PENDING order is returned unchanged."""
+        if isinstance(fill_price, bool) or not isinstance(fill_price, (int, float)) or not fill_price > 0:
+            raise ValueError(f"fill_price must be a positive number, got {fill_price!r}")
         with self._lock, self._connect() as conn:
-            conn.execute("UPDATE orders SET status = 'FILLED', fill_price = ? WHERE id = ?", (fill_price, order_id))
+            conn.execute("UPDATE orders SET status = 'FILLED', fill_price = ? WHERE id = ? AND status = 'PENDING'",
+                         (fill_price, order_id))
             return self._get(conn, order_id)
 
     def fail(self, order_id, reason):
+        """Mark a PENDING order FAILED. A non-PENDING order is returned unchanged."""
         with self._lock, self._connect() as conn:
-            conn.execute("UPDATE orders SET status = 'FAILED', reason = ? WHERE id = ?", (reason, order_id))
+            conn.execute("UPDATE orders SET status = 'FAILED', reason = ? WHERE id = ? AND status = 'PENDING'",
+                         (reason, order_id))
             return self._get(conn, order_id)
 
     def list_orders(self, limit=200):

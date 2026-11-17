@@ -1,3 +1,4 @@
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -92,6 +93,51 @@ def test_orders_survive_a_new_store_object(tmp_path):
     again = TradesStore(path)
     assert [o["id"] for o in again.list_orders()] == [order["id"]]
     assert again.claim_buy("a1", "AAPL", 2, DAY) == (order, False)
+
+
+def test_claim_after_filled_buy_returns_the_same_order(store):
+    filled = _filled_buy(store, "a1", 2, 100.0)
+    again, created = store.claim_buy("a1", "AAPL", 2, DAY)
+    assert created is False and again == filled
+
+
+def test_claim_retries_when_the_live_buy_fails_in_between(store, monkeypatch):
+    first, _ = store.claim_buy("a1", "AAPL", 2, DAY)
+    original = store._live_buy
+
+    def racing_live_buy(conn, alert_id):
+        # Another claimer marks the conflicting buy FAILED between our insert and our select.
+        conn.execute("UPDATE orders SET status = 'FAILED' WHERE id = ?", (first["id"],))
+        conn.commit()
+        monkeypatch.setattr(store, "_live_buy", original)
+        return original(conn, alert_id)
+
+    monkeypatch.setattr(store, "_live_buy", racing_live_buy)
+    order, created = store.claim_buy("a1", "AAPL", 2, DAY)
+    assert created is True and order is not None and order["id"] != first["id"]
+
+
+def test_other_integrity_errors_are_raised(store):
+    with pytest.raises(sqlite3.IntegrityError):
+        store.claim_buy("a1", None, 2, DAY)  # ticker is NOT NULL
+
+
+def test_fill_and_fail_only_move_pending_orders(store):
+    filled = _filled_buy(store, "a1", 2, 100.0)
+    assert store.fail(filled["id"], "Broker error.") == filled
+    assert store.fill(filled["id"], 999.0) == filled
+    order, _ = store.claim_buy("a2", "AAPL", 1, DAY)
+    failed = store.fail(order["id"], "Market is closed.")
+    assert store.fill(order["id"], 100.0) == failed
+    assert store.cash(10000) == 9800.0
+
+
+@pytest.mark.parametrize("price", [None, 0, -1.0, "100", True, float("nan")])
+def test_fill_rejects_a_missing_or_non_positive_price(store, price):
+    order, _ = store.claim_buy("a1", "AAPL", 1, DAY)
+    with pytest.raises(ValueError):
+        store.fill(order["id"], price)
+    assert store.list_orders()[0]["status"] == "PENDING"
 
 
 def test_list_orders_is_newest_first(store):
