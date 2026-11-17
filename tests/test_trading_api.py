@@ -202,6 +202,35 @@ def test_close_without_position_is_404(env):
     assert env.client.post("/api/positions/AAPL/close").status_code == 404
 
 
+def test_close_after_close_is_404(env):
+    env.approve()
+    assert env.client.post("/api/positions/AAPL/close").status_code == 200
+    assert env.client.post("/api/positions/AAPL/close").status_code == 404
+    assert env.client.get("/api/positions").json()["cash"] == 10000.0
+    assert [o["side"] for o in env.trades.list_orders()] == ["SELL", "BUY"]
+
+
+def test_close_with_quote_down_is_409_and_books_nothing(env):
+    env.approve()
+    env.price = None
+    r = env.client.post("/api/positions/AAPL/close")
+    assert r.status_code == 409 and r.json()["detail"] == "Price unavailable."
+    assert [o["side"] for o in env.trades.list_orders()] == ["BUY"]
+
+
+def test_close_broker_exception_marks_the_sell_failed(env, monkeypatch):
+    env.approve()
+
+    def boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(trading.MockBroker, "sell", boom)
+    with pytest.raises(RuntimeError):
+        trading.close_position("AAPL")
+    sell = env.trades.list_orders()[0]
+    assert (sell["side"], sell["status"], sell["reason"]) == ("SELL", "FAILED", "Broker error.")
+
+
 def test_close_when_market_closed_is_409(env):
     env.approve()
     env.open = None

@@ -21,8 +21,8 @@ def _filled_buy(store, alert_id, qty, price, day=DAY, **kw):
     return store.fill(order["id"], price)
 
 
-def _filled_sell(store, qty, price, day=DAY):
-    return store.fill(store.claim_sell("AAPL", qty, day)["id"], price)
+def _filled_sell(store, price, day=DAY):
+    return store.fill(store.claim_sell("AAPL", day)["id"], price)
 
 
 def test_claim_buy_twice_returns_the_same_order(store):
@@ -54,7 +54,7 @@ def test_position_and_cash_after_buy_buy_close(store):
         {"ticker": "AAPL", "quantity": 4, "averageCost": 105.0, "stopPrice": 99.0, "targetPrice": 130.0}
     ]
     assert store.cash(10000) == 9580.0
-    sell = _filled_sell(store, 4, 120.0)
+    sell = _filled_sell(store, 120.0)
     assert sell["side"] == "SELL" and sell["alertId"] is None
     assert store.open_positions() == []
     assert store.cash(10000) == 10060.0
@@ -63,7 +63,7 @@ def test_position_and_cash_after_buy_buy_close(store):
 def test_rebuy_after_close_starts_a_fresh_average(store):
     _filled_buy(store, "a1", 2, 100.0)
     _filled_buy(store, "a2", 2, 110.0)
-    _filled_sell(store, 4, 120.0)
+    _filled_sell(store, 120.0)
     _filled_buy(store, "a3", 1, 130.0)
     [pos] = store.open_positions()
     assert pos["quantity"] == 1 and pos["averageCost"] == 130.0
@@ -83,7 +83,7 @@ def test_filled_buys_on_counts_only_filled_buys_that_day(store):
     store.claim_buy("a3", "AAPL", 1, DAY)
     failed, _ = store.claim_buy("a4", "AAPL", 1, DAY)
     store.fail(failed["id"], "Broker error.")
-    _filled_sell(store, 1, 100.0)
+    _filled_sell(store, 100.0)
     assert store.filled_buys_on(DAY) == 1
 
 
@@ -141,6 +141,35 @@ def test_fill_rejects_a_missing_or_non_positive_price(store, price):
 
 
 def test_list_orders_is_newest_first(store):
-    a, _ = store.claim_buy("a1", "AAPL", 1, DAY)
-    b = store.claim_sell("AAPL", 1, DAY)
+    a = _filled_buy(store, "a1", 1, 100.0)
+    b = store.claim_sell("AAPL", DAY)
     assert [o["id"] for o in store.list_orders()] == [b["id"], a["id"]]
+
+
+def test_claim_sell_takes_the_whole_open_quantity(store):
+    _filled_buy(store, "a1", 2, 100.0)
+    _filled_buy(store, "a2", 3, 100.0)
+    assert store.claim_sell("AAPL", DAY)["quantity"] == 5
+
+
+def test_claim_sell_with_no_position_returns_none(store):
+    assert store.claim_sell("AAPL", DAY) is None
+    _filled_buy(store, "a1", 2, 100.0)
+    _filled_sell(store, 110.0)
+    assert store.claim_sell("AAPL", DAY) is None
+
+
+def test_second_close_while_first_is_pending_books_nothing(store):
+    _filled_buy(store, "a1", 2, 100.0)
+    first = store.claim_sell("AAPL", DAY)
+    assert store.claim_sell("AAPL", DAY) is None
+    store.fill(first["id"], 110.0)
+    assert store.claim_sell("AAPL", DAY) is None
+    assert store.cash(10000) == 10020.0
+    assert [o["side"] for o in store.list_orders()] == ["SELL", "BUY"]
+
+
+def test_failed_sell_does_not_block_a_later_close(store):
+    _filled_buy(store, "a1", 2, 100.0)
+    store.fail(store.claim_sell("AAPL", DAY)["id"], "Broker error.")
+    assert store.claim_sell("AAPL", DAY)["quantity"] == 2

@@ -77,8 +77,18 @@ class TradesStore:
             f"{_SELECT} WHERE alert_id = ? AND side = 'BUY' AND status != 'FAILED'", (alert_id,)
         ).fetchone())
 
-    def claim_sell(self, ticker, quantity, trading_date):
+    def claim_sell(self, ticker, trading_date):
+        """Insert a PENDING sell of the whole open position, or return None when there is
+        nothing to sell or a sell for this ticker is already in flight."""
         with self._lock, self._connect() as conn:
+            # The lock is per store object; BEGIN IMMEDIATE serialises across objects and processes.
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM orders WHERE ticker = ? AND side = 'SELL' AND status = 'PENDING'",
+                            (ticker,)).fetchone():
+                return None
+            quantity = sum(o["quantity"] for o in self._open_lots(conn).get(ticker, []))
+            if quantity <= 0:
+                return None
             return self._insert(conn, None, ticker, "SELL", quantity, trading_date, None, None, None)
 
     def fill(self, order_id, fill_price):
@@ -110,15 +120,24 @@ class TradesStore:
 
     def _filled(self):
         with self._connect() as conn:
-            return [_wire(r) for r in conn.execute(f"{_SELECT} WHERE status = 'FILLED' ORDER BY id")]
+            return self._filled_on(conn)
 
-    def open_positions(self):
+    @staticmethod
+    def _filled_on(conn):
+        return [_wire(r) for r in conn.execute(f"{_SELECT} WHERE status = 'FILLED' ORDER BY id")]
+
+    def _open_lots(self, conn):
         lots = {}
-        for o in self._filled():
+        for o in self._filled_on(conn):
             if o["side"] == "SELL":
                 lots[o["ticker"]] = []  # Close sells the whole position
             else:
                 lots.setdefault(o["ticker"], []).append(o)
+        return lots
+
+    def open_positions(self):
+        with self._connect() as conn:
+            lots = self._open_lots(conn)
         positions = []
         for ticker, open_lots in lots.items():
             quantity = sum(o["quantity"] for o in open_lots)

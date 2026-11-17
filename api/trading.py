@@ -102,18 +102,17 @@ def execute_approval(alert, db):
 
 def close_position(ticker):
     """Sell the whole position. The kill switch does not block Close."""
-    store = get_trades_store()
-    position = next((p for p in store.open_positions() if p["ticker"] == ticker), None)
-    if position is None:
-        raise LookupError(ticker)
     if session_fraction() is None:
         raise TradeRefused("Market is closed.")
-    price = price_of(ticker)
+    price = price_of(ticker)  # before the claim: no slow work between claim and fill/fail
     if price is None:
         raise TradeRefused("Price unavailable.")
-    quantity = position["quantity"]
-    order = store.claim_sell(ticker, quantity, trading_date())
-    return _settle(store, order, lambda broker: broker.sell(ticker, quantity, order["id"]), price)
+    store = get_trades_store()
+    # The position is read inside the claim, so a second Close cannot sell it again.
+    order = store.claim_sell(ticker, trading_date())
+    if order is None:
+        raise LookupError(ticker)
+    return _settle(store, order, lambda broker: broker.sell(ticker, order["quantity"], order["id"]), price)
 
 
 def positions_snapshot():
