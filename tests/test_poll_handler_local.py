@@ -36,7 +36,10 @@ class FakeScan:
 
 
 class FakeLlm:
-    def analyze_stock(self, ticker, signal_desc, stock_data):
+    calls: list = []
+
+    def analyze_stock(self, ticker, signal_desc, stock_data, checklist=None, strategy_notes=""):
+        FakeLlm.calls.append({"ticker": ticker, "checklist": checklist, "notes": strategy_notes})
         return f"Pros: strong volume. Cons: mock analysis for {ticker}."
 
 
@@ -82,6 +85,9 @@ def poll(monkeypatch, tmp_path):
     monkeypatch.setattr(lambda_function, "trading_date", lambda: "2026-11-16")
     monkeypatch.setattr(lambda_function, "ApiClient", FakeScan)
     monkeypatch.setattr(lambda_function, "LlmClient", FakeLlm)
+    monkeypatch.setattr(lambda_function, "completed_bars", lambda tickers, today: {})
+    monkeypatch.setattr(lambda_function, "_macd_days", set())
+    monkeypatch.setattr(FakeLlm, "calls", [])
     http = Telegram()
     monkeypatch.setattr(tc.requests, "post", http)
 
@@ -223,3 +229,138 @@ def test_no_order_line_when_trading_off(poll, monkeypatch):
     _trading(monkeypatch, False)
     lambda_function.lambda_handler({}, None)
     assert not any("Approve buys" in p["text"] or "MOCK" in p["text"] for p in poll.sends())
+
+
+# ---------- strategies: checklist on every alert, MACD alerts ----------
+
+def _macd_buy_bars():
+    """The series tests/test_strategies.py uses: a dip with a pullback, then a rebound (a MACD BUY)."""
+    from tests.test_indicators import bars_from
+
+    c = [100 + 0.3 * i for i in range(300)]
+    for k in range(7):
+        c[293 + k] = c[292] - 4 if k < 3 else c[292] - 4 + (k - 2) * 1.5
+    return bars_from(c)
+
+
+MACD_TICKER = "AAPL"  # in UNIVERSE, not in FakeScan's results
+
+
+def _bars(monkeypatch, bars):
+    monkeypatch.setattr(lambda_function, "completed_bars", lambda tickers, today: bars)
+
+
+def _by_strategy(strategy):
+    return [a for a in alert_store().list_alerts() if a["strategy"] == strategy]
+
+
+def test_volume_alert_stores_checklist_fields(poll, monkeypatch):
+    _bars(monkeypatch, {"NVDA": _macd_buy_bars()})
+    lambda_function.lambda_handler({}, None)
+    alert = _by_strategy("volume")[0]
+    assert alert["signalType"] == "VOLUME_BREAKTHROUGH"
+    assert [x["key"] for x in alert["checklist"]] == ["uptrend", "macd", "volume", "price_action", "reward_risk"]
+    assert alert["confidence"] == sum(x["points"] for x in alert["checklist"] if x["passed"])
+    assert alert["confidence"] > 0
+    assert alert["entryPrice"] == 182.4
+
+
+def test_macd_buy_raises_one_macd_alert(poll, monkeypatch):
+    bars = _macd_buy_bars()
+    _bars(monkeypatch, {MACD_TICKER: bars})
+    lambda_function.lambda_handler({}, None)
+    macd_alerts = _by_strategy("macd")
+    assert len(macd_alerts) == 1
+    a = macd_alerts[0]
+    assert a["ticker"] == MACD_TICKER and a["signalType"] == "MACD_CROSSOVER"
+    assert a["entryPrice"] == round(bars[-1][3], 2) == a["priceAtAlert"]
+    assert a["tradingDate"] == "2026-11-16"
+    volume_item = next(x for x in a["checklist"] if x["key"] == "volume")
+    assert volume_item["detail"] == "No volume reading"  # not in this poll's scan
+
+
+def test_macd_alert_uses_the_scan_volume_score(poll, monkeypatch):
+    _bars(monkeypatch, {"NVDA": _macd_buy_bars()})
+    lambda_function.lambda_handler({}, None)
+    a = _by_strategy("macd")[0]
+    volume_item = next(x for x in a["checklist"] if x["key"] == "volume")
+    assert volume_item["passed"] and "9.00x" in volume_item["detail"]
+
+
+def test_macd_runs_once_per_day_and_dedupes_after_a_restart(poll, monkeypatch):
+    _bars(monkeypatch, {MACD_TICKER: _macd_buy_bars()})
+    lambda_function.lambda_handler({}, None)
+    from strategies import macd
+
+    real = macd.evaluate
+    calls = []
+    monkeypatch.setattr(macd, "evaluate", lambda *a: calls.append(a) or real(*a))
+    lambda_function.lambda_handler({}, None)
+    assert calls == []  # same process, same day: the MACD pass is skipped
+    monkeypatch.setattr(lambda_function, "_macd_days", set())  # a fresh process
+    lambda_function.lambda_handler({}, None)
+    assert calls  # it ran again...
+    assert len(_by_strategy("macd")) == 1  # ...and alert_exists kept it to one
+
+
+def test_ticker_without_history_gets_no_macd_alert_and_a_zero_volume_alert(poll):
+    lambda_function.lambda_handler({}, None)  # completed_bars gives {}
+    assert _by_strategy("macd") == []
+    alert = _by_strategy("volume")[0]
+    assert alert["confidence"] == 0
+    assert all(x["detail"] == "Not enough history" for x in alert["checklist"])
+    assert alert.get("stopPrice") is None and alert.get("targetPrice") is None
+
+
+def test_macd_alerts_count_toward_the_run_cap(poll, monkeypatch):
+    from utils import settings_store
+
+    base = settings_store.defaults()
+    monkeypatch.setattr(lambda_function, "effective_settings",
+                        lambda: {**base, "maxCandidatesPerRun": 1, "volumeThreshold": 1.0})
+    _bars(monkeypatch, {MACD_TICKER: _macd_buy_bars()})
+    result = lambda_function.lambda_handler({}, None)
+    assert result["body"] == "Processed 1 signals."
+    assert _by_strategy("macd") == []
+    lambda_function.lambda_handler({}, None)  # the cut-short MACD pass is not marked done
+    assert len(_by_strategy("macd")) == 1
+
+
+def test_telegram_copies_carry_the_conditions_line(poll):
+    lambda_function.lambda_handler({}, None)
+    sends = poll.sends()
+    assert sends and all("Conditions met: 0 of 5 (0 points)" in p["text"] for p in sends)
+
+
+def test_llm_gets_the_checklist_and_strategy_notes(poll, monkeypatch):
+    _bars(monkeypatch, {MACD_TICKER: _macd_buy_bars()})
+    lambda_function.lambda_handler({}, None)
+    by_ticker = {c["ticker"]: c for c in FakeLlm.calls}
+    assert len(by_ticker["NVDA"]["checklist"]) == 5 and by_ticker["NVDA"]["notes"] == ""
+    assert len(by_ticker[MACD_TICKER]["checklist"]) == 5
+    assert by_ticker[MACD_TICKER]["notes"].startswith("# ")
+
+
+def test_llm_prompt_lists_checklist_and_notes():
+    from types import SimpleNamespace
+
+    from utils.llm_client import LlmClient
+
+    sent = {}
+
+    def create(**kw):
+        sent.update(kw)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+
+    llm = LlmClient.__new__(LlmClient)
+    llm.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    items = [{"key": "uptrend", "label": "Uptrend", "passed": True, "points": 25, "detail": "close 110 > SMA 100"},
+             {"key": "macd", "label": "MACD", "passed": False, "points": 25, "detail": "no cross"}]
+    assert llm.analyze_stock("AAPL", "sig", {}, checklist=items, strategy_notes="# Rules") == "ok"
+    prompt = sent["messages"][-1]["content"]
+    assert "PASS Uptrend: close 110 > SMA 100" in prompt
+    assert "FAIL MACD: no cross" in prompt
+    assert "authoritative" in prompt
+    assert "Strategy notes:\n# Rules" in prompt
+    llm.analyze_stock("AAPL", "sig", {})
+    assert "Strategy notes" not in sent["messages"][-1]["content"]

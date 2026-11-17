@@ -1,4 +1,5 @@
 import boto3
+import json
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -35,7 +36,8 @@ class DbClient:
         self.table = self.dynamodb.Table(Config.DYNAMODB_TABLE_NAME)
 
     def save_alert(self, alert_id, ticker, signal_details, pros_cons, chat_id=None, message_id=None,
-                   price=None, strategy='volume', trading_date=None):
+                   price=None, strategy='volume', trading_date=None, signal_type='VOLUME_BREAKTHROUGH',
+                   confidence=None, checklist=None, entry=None, stop=None, target=None):
         """Saves a new alert to DynamoDB.
 
         Field names here are the contract `types/market.ts` declares. `aiProsCons`
@@ -51,7 +53,12 @@ class DbClient:
             'aiProsCons': pros_cons,
             'status': STATUS_PENDING,
             'strategy': strategy,
+            'signalType': signal_type,
         }
+        extra = {'confidence': confidence, 'checklist': checklist, 'entryPrice': entry, 'stopPrice': stop,
+                 'targetPrice': target}
+        # Round-trip through JSON so every float, also inside the checklist, becomes Decimal(str(x)).
+        item.update(json.loads(json.dumps({k: v for k, v in extra.items() if v is not None}), parse_float=Decimal))
         if trading_date: item['tradingDate'] = trading_date
         # DynamoDB rejects Python floats; go through str to keep the printed value.
         if price is not None: item['priceAtAlert'] = Decimal(str(price))

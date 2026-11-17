@@ -10,15 +10,26 @@ class LlmClient:
         self.client = Groq(api_key=Config.GROQ_API_KEY)
 
     @traceable(run_type="llm")
-    def analyze_stock(self, ticker, signal_details, stock_data):
+    def analyze_stock(self, ticker, signal_details, stock_data, checklist=None, strategy_notes=""):
         """Generates a Pros/Cons summary for a trade setup."""
         prompt = (
             f"Analyze the following stock trade signal for {ticker}:\n"
             f"Signal Trigger: {signal_details}\n"
             f"Stock Context: {stock_data}\n\n"
+        )
+        if checklist:
+            prompt += (
+                "Strategy checklist (computed from market data; these values are authoritative, "
+                "do not recompute or contradict them):\n"
+                + "".join(f"{'PASS' if x['passed'] else 'FAIL'} {x['label']}: {x['detail']}\n" for x in checklist)
+                + "\n"
+            )
+        prompt += (
             "Provide a concise summary with 'Pros' and 'Cons' for this trade. "
             "Keep it under 150 words."
         )
+        if strategy_notes:
+            prompt += f"\n\nStrategy notes:\n{strategy_notes}"
         
         try:
             completion = self.client.chat.completions.create(

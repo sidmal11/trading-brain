@@ -10,9 +10,14 @@ from utils.broker import whole_shares
 from graph import run_workflow
 from utils.langgraph_state import TradingBrainState
 from utils.market_clock import MIN_SESSION_FRACTION, session_fraction, trading_date
+from utils.api_client import UNIVERSE
+from strategies import macd, strategy_notes, volume
+from strategies.history import completed_bars
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_macd_days = set()  # trading dates whose MACD pass finished in this process
 
 
 def _order_line(settings, ticker, price):
@@ -60,30 +65,20 @@ def lambda_handler(event, context):
         logger.info("No scan results found.")
         return {"statusCode": 200, "body": "No signals identified."}
 
-    # 2. Process potential candidates
-    signals_count = 0
-    for result in scan_results:
-        if signals_count >= settings["maxCandidatesPerRun"]:
-            break
-        ticker = result.get("ticker")
-        if not ticker: continue
-        
-        # Simple volume breakthrough check (example logic)
-        volume_score = result.get("volume_score", 0)
-        if volume_score < settings["volumeThreshold"]:
-            continue
-        # One alert per ticker per trading day; checked before any details or LLM call.
-        if db.alert_exists(ticker, "volume", today):
-            continue
+    bars = completed_bars(UNIVERSE, today)
+    threshold = settings["volumeThreshold"]
 
-        logger.info(f"Signal detected for {ticker}. Running AI analysis...")
+    def raise_alert(ticker, sig, signal_desc, price):
+        logger.info(f"{sig['strategy']} signal for {ticker}. Running AI analysis...")
 
         # 3. Get detailed context for AI
         stock_data = api.get_stock_details(ticker)
-        
+
         # 4. Generate Pros/Cons with LLM
-        signal_desc = f"Volume Breakthrough detected with score {volume_score}"
-        analysis = llm.analyze_stock(ticker, signal_desc, stock_data)
+        analysis = llm.analyze_stock(ticker, signal_desc, stock_data, checklist=sig["checklist"],
+                                     strategy_notes=strategy_notes(sig["strategy"]))
+        passed = sum(x["passed"] for x in sig["checklist"])
+        conditions = f"{signal_desc}\nConditions met: {passed} of 5 ({sig['confidence']} points)"
 
         # 5. Send Telegram Alert
         # The id is minted before the send, not after: it rides along in the
@@ -96,7 +91,7 @@ def lambda_handler(event, context):
         if settings["telegramAlertsEnabled"]:
             recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + subscribers.active_chat_ids()))
             message_id, blocked = telegram.broadcast_alert(
-                ticker, signal_desc, analysis, alert_id, recipients, _order_line(settings, ticker, result.get("price"))
+                ticker, conditions, analysis, alert_id, recipients, _order_line(settings, ticker, price)
             )
             for chat_id in blocked:
                 subscribers.deactivate(chat_id)
@@ -110,11 +105,50 @@ def lambda_handler(event, context):
             pros_cons=analysis,
             chat_id=Config.TELEGRAM_CHAT_ID or next(iter(sorted(telegram.admin_chat_ids)), None),
             message_id=str(message_id) if message_id else None,
-            price=result.get("price"),
-            strategy="volume",
+            price=price,
+            strategy=sig["strategy"],
             trading_date=today,
+            signal_type=sig["signalType"],
+            confidence=sig["confidence"],
+            checklist=sig["checklist"],
+            entry=sig["entryPrice"],
+            stop=sig["stopPrice"],
+            target=sig["targetPrice"],
         )
+
+    # 2. Process potential candidates
+    signals_count = 0
+    for result in scan_results:
+        if signals_count >= settings["maxCandidatesPerRun"]:
+            break
+        ticker = result.get("ticker")
+        if not ticker: continue
+
+        volume_score = result.get("volume_score", 0)
+        if volume_score < threshold:
+            continue
+        # One alert per ticker per trading day; checked before any details or LLM call.
+        if db.alert_exists(ticker, "volume", today):
+            continue
+        sig = volume.evaluate(ticker, bars.get(ticker, []), result, threshold)
+        raise_alert(ticker, sig, f"Volume Breakthrough detected with score {volume_score}", result.get("price"))
         signals_count += 1
+
+    # MACD reads completed bars only, so one full pass per trading day is enough. A pass cut short
+    # by the cap, or with no history downloaded, is retried next poll; alert_exists stops repeats.
+    if today not in _macd_days and bars:
+        scores = {r.get("ticker"): r.get("volume_score") for r in scan_results}
+        for ticker in UNIVERSE:
+            if signals_count >= settings["maxCandidatesPerRun"]:
+                break
+            if db.alert_exists(ticker, "macd", today):
+                continue
+            sig = macd.evaluate(ticker, bars.get(ticker, []), scores.get(ticker), threshold)
+            if sig:
+                raise_alert(ticker, sig, "MACD crossed up above a rising 200-day average", sig["entryPrice"])
+                signals_count += 1
+        else:
+            _macd_days.add(today)
 
     logger.info(f"Completed run. Processed {signals_count} signals.")
     return {"statusCode": 200, "body": f"Processed {signals_count} signals."}

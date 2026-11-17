@@ -146,7 +146,7 @@ class FakeScan:
 
 
 class FakeLlm:
-    def analyze_stock(self, *a):
+    def analyze_stock(self, *a, **k):
         return "analysis"
 
 
@@ -162,6 +162,8 @@ def poll_env(monkeypatch, tmp_path):
     monkeypatch.setattr(lambda_function, "trading_date", lambda: "2026-11-16")
     monkeypatch.setattr(lambda_function, "ApiClient", FakeScan)
     monkeypatch.setattr(lambda_function, "LlmClient", FakeLlm)
+    monkeypatch.setattr(lambda_function, "completed_bars", lambda tickers, today: {})
+    monkeypatch.setattr(lambda_function, "_macd_days", set())
     sent = []
 
     class Resp:

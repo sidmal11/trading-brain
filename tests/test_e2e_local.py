@@ -130,6 +130,22 @@ def test_alert_records_price_and_is_found_by_ticker_strategy_date(world):
     assert float(db.get_alert("a-price")["priceAtAlert"]) == 182.4
 
 
+def test_alert_round_trips_strategy_fields(world):
+    db = world["db"]
+    items = [{"key": "uptrend", "label": "Uptrend", "passed": True, "points": 25, "detail": "close 110.5"},
+             {"key": "macd", "label": "MACD", "passed": False, "points": 25, "detail": "no cross"}]
+    db.save_alert("a-macd", "AAPL", "sig", "pros", price=101.25, strategy="macd", trading_date="2026-11-16",
+                  signal_type="MACD_CROSSOVER", confidence=25, checklist=items, entry=101.25, stop=95.5, target=110.88)
+    a = db.get_alert("a-macd")
+    assert a["signalType"] == "MACD_CROSSOVER" and int(a["confidence"]) == 25
+    assert [dict(x, points=int(x["points"])) for x in a["checklist"]] == items
+    assert [float(a[k]) for k in ("entryPrice", "stopPrice", "targetPrice")] == [101.25, 95.5, 110.88]
+    db.save_alert("a-old", "NVDA", "sig", "pros")
+    old = db.get_alert("a-old")
+    assert old["signalType"] == "VOLUME_BREAKTHROUGH"
+    assert not any(k in old for k in ("confidence", "checklist", "entryPrice", "stopPrice", "targetPrice"))
+
+
 # ── UC-1 Subscribe ────────────────────────────────────────────────────────────
 
 def test_uc1_start_subscribes_and_replies(world):

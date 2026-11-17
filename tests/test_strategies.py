@@ -85,4 +85,5 @@ def test_strategy_notes():
     from strategies import strategy_notes
     n = strategy_notes("macd")
     assert 0 < len(n) <= 6000
+    assert n.startswith("# MACD")  # the chat preamble before the first heading is dropped
     assert strategy_notes("volume") == ""

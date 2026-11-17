@@ -44,7 +44,8 @@ class SqliteStore:
     # ── Alerts (DbClient interface) ──────────────────────────────────────────
 
     def save_alert(self, alert_id, ticker, signal_details, pros_cons, chat_id=None, message_id=None,
-                   price=None, strategy="volume", trading_date=None):
+                   price=None, strategy="volume", trading_date=None, signal_type="VOLUME_BREAKTHROUGH",
+                   confidence=None, checklist=None, entry=None, stop=None, target=None):
         item = {
             "alertId": alert_id,
             "ticker": ticker,
@@ -53,7 +54,11 @@ class SqliteStore:
             "aiProsCons": pros_cons,
             "status": STATUS_PENDING,
             "strategy": strategy,
+            "signalType": signal_type,
         }
+        extra = {"confidence": confidence, "checklist": checklist, "entryPrice": entry, "stopPrice": stop,
+                 "targetPrice": target}
+        item.update({k: v for k, v in extra.items() if v is not None})
         if trading_date:
             item["tradingDate"] = trading_date
         if price is not None:
