@@ -34,6 +34,10 @@ class TestVolumeScore(unittest.TestCase):
         # 150 so far at half the session projects to 300, which is 3x the 100 average
         self.assertEqual(_volume_score([100] * 5 + [150], session_fraction=0.5), 3.0)
 
+    def test_non_positive_session_fraction_gives_none(self):
+        self.assertIsNone(_volume_score([100] * 5 + [150], session_fraction=0))
+        self.assertIsNone(_volume_score([100] * 5 + [150], session_fraction=-0.5))
+
     def test_zero_and_nan_days_are_ignored(self):
         self.assertEqual(_volume_score([100, 0, float("nan"), 100, 100, 100, 100, 200]), 2.0)
 

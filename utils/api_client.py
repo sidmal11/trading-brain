@@ -14,6 +14,8 @@ UNIVERSE = [
 
 def _volume_score(volumes, session_fraction=1.0):
     """Latest volume, projected to a full day by dividing by session_fraction, over the average of the prior days; None if too little history."""
+    if session_fraction <= 0:
+        return None
     volumes = [v for v in volumes if v == v and v > 0]  # drops NaN and zero-volume days
     if len(volumes) < 6:
         return None
