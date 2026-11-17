@@ -78,6 +78,11 @@ def _get(key, default=""):
     return default
 
 
+def default_trades_path(sqlite_path):
+    """trades.db sits next to the main database (so /data/trades.db in Docker)."""
+    return os.path.join(os.path.dirname(sqlite_path), "trades.db")
+
+
 class Config:
     STOCK_SCREENER_URL = _get("STOCK_SCREENER_URL", "http://localhost:8000")
     STOCK_SCREENER_API_KEY = _get("STOCK_SCREENER_API_KEY")
@@ -105,6 +110,10 @@ class Config:
     # "dynamodb" (AWS, default) or "sqlite" (single file, no AWS).
     STORAGE_BACKEND = _get("STORAGE_BACKEND", "dynamodb").lower()
     SQLITE_PATH = _get("SQLITE_PATH", "trading_brain.db")
+    TRADES_SQLITE_PATH = _get("TRADES_SQLITE_PATH", default_trades_path(SQLITE_PATH))
+    # Mock brokerage account (phase 2). Any BROKER other than "mock" stops create_app().
+    BROKER = _get("BROKER", "mock").lower()
+    MOCK_STARTING_CASH = float(_get("MOCK_STARTING_CASH", "10000"))
 
     # Read-API login. "email_otp" for a host without AWS; "cognito" or unset otherwise.
     AUTH_MODE = _get("AUTH_MODE", "").lower()

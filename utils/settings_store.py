@@ -30,6 +30,9 @@ def defaults() -> dict:
         "maxCandidatesPerRun": 5,
         "telegramAlertsEnabled": True,
         "markets": [MARKET_US_STOCKS],
+        "tradingEnabled": False,
+        "dollarsPerTrade": 500,
+        "maxOrdersPerDay": 3,
     }
 
 

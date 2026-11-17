@@ -84,6 +84,9 @@ class SettingsIn(BaseModel):
     maxCandidatesPerRun: int = Field(ge=1, le=20)
     telegramAlertsEnabled: bool
     markets: List[Literal["us_stocks", "futures", "options"]] = Field(min_length=1)
+    tradingEnabled: bool
+    dollarsPerTrade: int = Field(ge=50, le=5000)
+    maxOrdersPerDay: int = Field(ge=1, le=20)
 
     @field_validator("markets")
     @classmethod

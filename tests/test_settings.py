@@ -21,6 +21,9 @@ GOOD = {
     "maxCandidatesPerRun": 3,
     "telegramAlertsEnabled": True,
     "markets": ["us_stocks"],
+    "tradingEnabled": False,
+    "dollarsPerTrade": 500,
+    "maxOrdersPerDay": 3,
 }
 
 
@@ -90,6 +93,46 @@ def test_settings_survive_a_new_store_instance(tmp_path):
     path = str(tmp_path / "persist.db")
     SettingsStore(path).put(GOOD)
     assert SettingsStore(path).get()["pollIntervalMinutes"] == 10
+
+
+# ── Trading settings ──────────────────────────────────────────────────────────
+
+def test_trading_defaults():
+    d = defaults()
+    assert d["tradingEnabled"] is False
+    assert d["dollarsPerTrade"] == 500
+    assert d["maxOrdersPerDay"] == 3
+
+
+def test_old_stored_settings_get_trading_defaults(tmp_path):
+    old = {k: v for k, v in GOOD.items() if k not in ("tradingEnabled", "dollarsPerTrade", "maxOrdersPerDay")}
+    store = SettingsStore(str(tmp_path / "old.db"))
+    store.put(old)
+    got = store.get()
+    assert (got["tradingEnabled"], got["dollarsPerTrade"], got["maxOrdersPerDay"]) == (False, 500, 3)
+
+
+@pytest.mark.parametrize("field, bad", [
+    ("dollarsPerTrade", 49),
+    ("dollarsPerTrade", 5001),
+    ("dollarsPerTrade", 500.5),
+    ("maxOrdersPerDay", 0),
+    ("maxOrdersPerDay", 21),
+])
+def test_put_settings_rejects_out_of_range_trading_values(app_env, field, bad):
+    assert app_env.put("/api/settings", json={**GOOD, field: bad}).status_code == 422
+
+
+def test_put_settings_round_trips_trading_values(app_env):
+    new = {**GOOD, "tradingEnabled": True, "dollarsPerTrade": 750, "maxOrdersPerDay": 5}
+    assert app_env.put("/api/settings", json=new).status_code == 200
+    body = app_env.get("/api/settings").json()
+    assert (body["tradingEnabled"], body["dollarsPerTrade"], body["maxOrdersPerDay"]) == (True, 750, 5)
+
+
+def test_trades_path_defaults_next_to_sqlite_path():
+    from config import default_trades_path
+    assert Path(default_trades_path("/data/trading_brain.db")) == Path("/data/trades.db")
 
 
 # ── Poll honours settings ─────────────────────────────────────────────────────
