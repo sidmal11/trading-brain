@@ -287,6 +287,48 @@ def test_macd_alert_uses_the_scan_volume_score(poll, monkeypatch):
     assert volume_item["passed"] and "9.00x" in volume_item["detail"]
 
 
+def test_macd_alert_price_is_the_scan_live_price_when_available(poll, monkeypatch):
+    bars = _macd_buy_bars()
+    _bars(monkeypatch, {"NVDA": bars})
+    lambda_function.lambda_handler({}, None)
+    a = _by_strategy("macd")[0]
+    assert a["priceAtAlert"] == 182.4  # the scan's live price for NVDA
+    assert a["entryPrice"] == round(bars[-1][3], 2)  # the checklist entry rule is unchanged
+
+
+def _dated(bars, *last_dates):
+    """The same closes, with the last bars relabelled to the given dates."""
+    head = bars[: len(bars) - len(last_dates)]
+    return head + [(d, *b[1:]) for d, b in zip(last_dates, bars[len(head):])]
+
+
+def test_one_crossover_raises_one_macd_alert_over_three_trading_days(poll, monkeypatch):
+    bars = _macd_buy_bars()
+    days = [("2026-11-16", ("2026-11-12", "2026-11-13")),
+            ("2026-11-17", ("2026-11-13", "2026-11-16")),
+            ("2026-11-18", ("2026-11-16", "2026-11-17"))]
+    for today, last in days:
+        monkeypatch.setattr(lambda_function, "trading_date", lambda t=today: t)
+        _bars(monkeypatch, {MACD_TICKER: _dated(bars, *last)})
+        lambda_function.lambda_handler({}, None)
+    assert len(_by_strategy("macd")) == 1
+
+
+def test_one_alert_read_per_poll(poll, monkeypatch):
+    _bars(monkeypatch, {MACD_TICKER: _macd_buy_bars()})
+    from utils.storage import SqliteStore
+
+    real, reads = SqliteStore.list_alerts, []
+    monkeypatch.setattr(SqliteStore, "list_alerts", lambda self, *a, **k: reads.append(1) or real(self, *a, **k))
+
+    def per_ticker(*a):
+        raise AssertionError("per-ticker alert read")
+
+    monkeypatch.setattr(SqliteStore, "alert_exists", per_ticker)
+    lambda_function.lambda_handler({}, None)
+    assert len(reads) == 1
+
+
 def test_macd_runs_once_per_day_and_dedupes_after_a_restart(poll, monkeypatch):
     _bars(monkeypatch, {MACD_TICKER: _macd_buy_bars()})
     lambda_function.lambda_handler({}, None)
@@ -303,12 +345,14 @@ def test_macd_runs_once_per_day_and_dedupes_after_a_restart(poll, monkeypatch):
     assert len(_by_strategy("macd")) == 1  # ...and alert_exists kept it to one
 
 
-def test_ticker_without_history_gets_no_macd_alert_and_a_zero_volume_alert(poll):
+def test_ticker_without_history_gets_no_macd_alert_and_a_volume_only_alert(poll):
     lambda_function.lambda_handler({}, None)  # completed_bars gives {}
     assert _by_strategy("macd") == []
     alert = _by_strategy("volume")[0]
-    assert alert["confidence"] == 0
-    assert all(x["detail"] == "Not enough history" for x in alert["checklist"])
+    assert alert["confidence"] == 20
+    v = next(x for x in alert["checklist"] if x["key"] == "volume")
+    assert v["passed"] and "9.00x" in v["detail"]
+    assert all(x["detail"] == "Not enough history" for x in alert["checklist"] if x["key"] != "volume")
     assert alert.get("stopPrice") is None and alert.get("targetPrice") is None
 
 
@@ -329,7 +373,7 @@ def test_macd_alerts_count_toward_the_run_cap(poll, monkeypatch):
 def test_telegram_copies_carry_the_conditions_line(poll):
     lambda_function.lambda_handler({}, None)
     sends = poll.sends()
-    assert sends and all("Conditions met: 0 of 5 (0 points)" in p["text"] for p in sends)
+    assert sends and all("Conditions met: 1 of 5 (20 points)" in p["text"] for p in sends)
 
 
 def test_llm_gets_the_checklist_and_strategy_notes(poll, monkeypatch):
@@ -338,7 +382,7 @@ def test_llm_gets_the_checklist_and_strategy_notes(poll, monkeypatch):
     by_ticker = {c["ticker"]: c for c in FakeLlm.calls}
     assert len(by_ticker["NVDA"]["checklist"]) == 5 and by_ticker["NVDA"]["notes"] == ""
     assert len(by_ticker[MACD_TICKER]["checklist"]) == 5
-    assert by_ticker[MACD_TICKER]["notes"].startswith("# ")
+    assert by_ticker[MACD_TICKER]["notes"].startswith("## 3.1")
 
 
 def test_llm_prompt_lists_checklist_and_notes():

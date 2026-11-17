@@ -57,6 +57,9 @@ def _buy_refusal(alert, today, store, settings, price, quantity):
         return "Market is closed."
     if alert.get("tradingDate") != today:
         return "Alert expired: it is not from today."
+    ticker = alert["ticker"].upper()
+    if any(p["ticker"].upper() == ticker for p in store.open_positions()):
+        return f"Already holding {ticker}."
     if store.filled_buys_on(today) >= settings["maxOrdersPerDay"]:
         return f"Daily order limit reached ({settings['maxOrdersPerDay']})."
     if price is None:

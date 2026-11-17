@@ -127,6 +127,7 @@ def test_macd_cross_window_is_exactly_three_bars():
     res = item(run(bars_from(closes[: c + 3])), "macd")
     assert res["passed"] and res["points"] == 25
     assert "2 days ago" in res["detail"]
+    assert "crossed up 1 day ago" in item(run(bars_from(closes[: c + 2])), "macd")["detail"]
     # cross 4 bars back -> fails
     res = item(run(bars_from(closes[: c + 4])), "macd")
     assert not res["passed"]
@@ -229,6 +230,16 @@ def test_stop_target_and_8_percent_rule():
     assert res["stopPrice"] is None and res["targetPrice"] is None
 
 
+def test_detail_number_formats():
+    rr = item(run(_flat_with_lows({-1: 91.96}), entry=100), "reward_risk")
+    assert "(8.04% risk)" in rr["detail"]
+    closes, c = _macd_series()
+    d = item(run(bars_from(closes[: c + 3])), "macd")["detail"]
+    line, sig, hist = macd(closes[: c + 3])
+    assert f"MACD {line[-1]:.3g} vs signal {sig[-1]:.3g}" in d
+    assert f"histogram {hist[-1]:.3g} (previous {hist[-2]:.3g})" in d
+
+
 def test_stop_window_is_exactly_last_ten_bars():
     res = run(_flat_with_lows({-10: 91.0, -5: 95.0}), entry=100)
     assert res["stopPrice"] == 91.0  # oldest of the last 10 counts
@@ -274,12 +285,16 @@ def test_labels_and_no_em_dash():
     assert all("—" not in x["detail"] and "—" not in x["label"] for x in res["checklist"])
 
 
-def test_short_history_fails_everything():
+def test_short_history_fails_everything_but_volume():
     for n in (229, 0):
-        res = run(bars_from(rising(n)), volume_ok=True)
+        res = run(bars_from(rising(n)), volume_ok=True, volume_detail="Volume 3.5x vs 3.0x")
         assert [x["key"] for x in res["checklist"]] == KEYS
-        assert all(not x["passed"] and x["detail"] == "Not enough history" for x in res["checklist"])
-        assert res["confidence"] == 0
+        others = [x for x in res["checklist"] if x["key"] != "volume"]
+        assert all(not x["passed"] and x["detail"] == "Not enough history" for x in others)
+        v = item(res, "volume")
+        assert v["passed"] and v["detail"] == "Volume 3.5x vs 3.0x"
+        assert res["confidence"] == 20
+        assert run(bars_from(rising(n)))["confidence"] == 0
         assert res["stopPrice"] is None and res["targetPrice"] is None
         assert not macd_buy(res)
     res = run(bars_from(rising(230)))

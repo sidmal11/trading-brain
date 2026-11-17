@@ -81,9 +81,31 @@ def test_macd_evaluate():
     assert not v["passed"] and v["detail"] == "No volume reading"
 
 
+def test_missing_tickers_are_logged(caplog):
+    with patch("strategies.history.yf.download", return_value=frame(["A"])):
+        with caplog.at_level("WARNING", logger="strategies.history"):
+            out = history.completed_bars(["A", "ZZZ"], "2026-10-06")
+    assert "A" in out
+    assert any(r.levelname == "WARNING" and "ZZZ" in r.getMessage() for r in caplog.records)
+
+
 def test_strategy_notes():
     from strategies import strategy_notes
     n = strategy_notes("macd")
     assert 0 < len(n) <= 6000
-    assert n.startswith("# MACD")  # the chat preamble before the first heading is dropped
+    heads = [line for line in n.splitlines() if line.startswith("#")]
+    assert n.startswith("## 3.1 Long")
+    for h in ("# 6. ", "# 7. ", "# 8. ", "# 12. "):
+        assert any(x.startswith(h) for x in heads)
+    assert not any("3.2" in x for x in heads) and "Short (Sell) Setup" not in n
+    assert not any(x.startswith(("# 4.", "# 9.", "# 3. ")) for x in heads)
     assert strategy_notes("volume") == ""
+
+
+def test_strategy_notes_fall_back_without_the_sections(monkeypatch):
+    import strategies
+
+    text = "preamble\n# Plan\n" + "x" * 7000
+    monkeypatch.setattr(strategies.Path, "read_text", lambda self, encoding=None: text)
+    n = strategies.strategy_notes("macd")
+    assert n.startswith("# Plan") and len(n) == 6000

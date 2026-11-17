@@ -59,9 +59,9 @@ def _macd(closes):
                 if line[i - 1] <= sig[i - 1] and line[i] > sig[i]), None)
     passed = ago is not None and hist[-1] > 0 and hist[-1] > hist[-2]
     when = "no cross up in 3 days" if ago is None else (
-        "crossed up on the last day" if ago == 0 else f"crossed up {ago} days ago")
-    detail = (f"MACD {line[-1]:.2f} vs signal {sig[-1]:.2f}, {when}; "
-              f"histogram {hist[-1]:.2f} (previous {hist[-2]:.2f})")
+        "crossed up on the last day" if ago == 0 else f"crossed up {ago} {'day' if ago == 1 else 'days'} ago")
+    detail = (f"MACD {line[-1]:.3g} vs signal {sig[-1]:.3g}, {when}; "
+              f"histogram {hist[-1]:.3g} (previous {hist[-2]:.3g})")
     return passed, detail
 
 
@@ -85,7 +85,7 @@ def _reward_risk(bars, entry):
         return False, f"Entry {entry:.2f}, 10-day low {stop:.2f} is not below entry", None, None
     risk = (entry - stop) / entry
     target = entry + 1.5 * (entry - stop)
-    detail = f"Entry {entry:.2f}, stop {stop:.2f} ({risk * 100:.1f}% risk), target {target:.2f}"
+    detail = f"Entry {entry:.2f}, stop {stop:.2f} ({risk * 100:.2f}% risk), target {target:.2f}"
     return risk <= 0.08, detail, stop, target
 
 
@@ -99,6 +99,7 @@ def checklist(bars, entry, volume_ok, volume_detail):
         entry = closes[-1]
     if len(bars) < MIN_BARS:
         results = {k: (False, "Not enough history") for k, _, _ in ITEMS}
+        results["volume"] = (bool(volume_ok), volume_detail)  # volume comes from the scan, not history
         stop = target = None
     else:
         rr_passed, rr_detail, stop, target = _reward_risk(bars, entry)

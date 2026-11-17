@@ -37,5 +37,8 @@ def completed_bars(tickers, today):
         return {}
     if not result:  # an empty outage frame is a failure: retry on the next call
         return {}
+    missing = [t for t in tickers if t not in result]
+    if missing:
+        logger.warning("Yahoo history missing for %s", ", ".join(missing))
     _cache.update(today=today, bars=result)
     return result

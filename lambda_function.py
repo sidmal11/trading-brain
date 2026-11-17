@@ -67,6 +67,8 @@ def lambda_handler(event, context):
 
     bars = completed_bars(UNIVERSE, today)
     threshold = settings["volumeThreshold"]
+    # shortcut: on DynamoDB list_alerts is one scan page (about 1 MB), fine at a few alerts a day.
+    seen = {(a.get("ticker"), a.get("strategy"), a.get("tradingDate")) for a in db.list_alerts(limit=10**9)}
 
     def raise_alert(ticker, sig, signal_desc, price):
         logger.info(f"{sig['strategy']} signal for {ticker}. Running AI analysis...")
@@ -115,6 +117,7 @@ def lambda_handler(event, context):
             stop=sig["stopPrice"],
             target=sig["targetPrice"],
         )
+        seen.add((ticker, sig["strategy"], today))
 
     # 2. Process potential candidates
     signals_count = 0
@@ -128,24 +131,28 @@ def lambda_handler(event, context):
         if volume_score < threshold:
             continue
         # One alert per ticker per trading day; checked before any details or LLM call.
-        if db.alert_exists(ticker, "volume", today):
+        if (ticker, "volume", today) in seen:
             continue
         sig = volume.evaluate(ticker, bars.get(ticker, []), result, threshold)
         raise_alert(ticker, sig, f"Volume Breakthrough detected with score {volume_score}", result.get("price"))
         signals_count += 1
 
     # MACD reads completed bars only, so one full pass per trading day is enough. A pass cut short
-    # by the cap, or with no history downloaded, is retried next poll; alert_exists stops repeats.
+    # by the cap, or with no history downloaded, is retried next poll; `seen` stops repeats.
     if today not in _macd_days and bars:
         scores = {r.get("ticker"): r.get("volume_score") for r in scan_results}
+        prices = {r.get("ticker"): r.get("price") for r in scan_results}
         for ticker in UNIVERSE:
             if signals_count >= settings["maxCandidatesPerRun"]:
                 break
-            if db.alert_exists(ticker, "macd", today):
+            tb = bars.get(ticker, [])
+            # A cross stays "in the last 3 bars" for 3 days: skip if an alert was raised on any of them.
+            if any((ticker, "macd", d) in seen for d in [today] + [b[0] for b in tb[-2:]]):
                 continue
-            sig = macd.evaluate(ticker, bars.get(ticker, []), scores.get(ticker), threshold)
+            sig = macd.evaluate(ticker, tb, scores.get(ticker), threshold)
             if sig:
-                raise_alert(ticker, sig, "MACD crossed up above a rising 200-day average", sig["entryPrice"])
+                raise_alert(ticker, sig, "MACD crossed up above a rising 200-day average",
+                            prices.get(ticker) or sig["entryPrice"])
                 signals_count += 1
         else:
             _macd_days.add(today)

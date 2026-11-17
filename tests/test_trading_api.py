@@ -99,6 +99,21 @@ def test_second_approval_places_no_second_order(env):
     assert [o["status"] for o in orders] == ["FILLED"]
 
 
+def test_second_alert_for_a_held_ticker_is_refused_until_close(env):
+    assert env.approve().status_code == 200
+    env.save_alert("a2")  # AAPL again
+    r = env.approve("a2")
+    assert r.status_code == 409 and r.json()["detail"] == "Already holding AAPL."
+    assert env.status("a2") == "PENDING"
+    mine = [o for o in env.trades.list_orders() if o["alertId"] == "a2"]
+    assert [(o["status"], o["reason"]) for o in mine] == [("FAILED", "Already holding AAPL.")]
+    [position] = env.client.get("/api/positions").json()["positions"]
+    assert position["quantity"] == 2  # no second buy
+    assert env.client.post("/api/positions/AAPL/close").status_code == 200
+    r = env.approve("a2")
+    assert r.status_code == 200 and r.json()["order"]["status"] == "FILLED"
+
+
 def test_trading_off_only_records_the_decision(env):
     env.set(tradingEnabled=False)
     r = env.approve()
