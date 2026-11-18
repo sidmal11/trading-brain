@@ -92,6 +92,7 @@ def poll(monkeypatch, tmp_path):
     monkeypatch.setattr(lambda_function, "refresh_daily", lambda *a, **k: {"failed": False})  # no Yahoo
     monkeypatch.setattr(lambda_function, "_bar_days", set())
     monkeypatch.setattr(lambda_function, "_backtest_days", set())
+    monkeypatch.setattr(lambda_function, "_bar_retry_at", 0.0)
     http = Telegram()
     monkeypatch.setattr(tc.requests, "post", http)
     http.prices = {}  # the sweep's quotes; a ticker not listed has no price this poll
@@ -590,10 +591,13 @@ def test_poll_refreshes_bars_once_per_trading_day(poll, monkeypatch):
     assert "SPY" in calls[0][1] and "XLK" in calls[0][1] and "NVDA" in calls[0][1]
 
 
-def test_failed_refresh_is_retried_next_poll(poll, monkeypatch):
+def test_failed_refresh_is_retried_after_thirty_minutes(poll, monkeypatch):
     calls = []
     monkeypatch.setattr(lambda_function, "refresh_daily", lambda *a: calls.append(1) or {"failed": True})
     lambda_function.lambda_handler({}, None)
+    lambda_function.lambda_handler({}, None)  # next poll: not yet
+    assert len(calls) == 1
+    monkeypatch.setattr(lambda_function, "_bar_retry_at", 0.0)  # 30 minutes later
     lambda_function.lambda_handler({}, None)
     assert len(calls) == 2
 
@@ -633,3 +637,43 @@ def test_outcomes_are_stored_after_the_bar_refresh(poll):
     lambda_function.lambda_handler({}, None)
     [row] = ResearchStore(Config.SQLITE_PATH).outcomes("macd")
     assert row["alertId"] == "o1" and row["reason"] == "target"
+
+
+def test_stored_bars_gone_stale_block_alerts_even_with_an_old_valid_report(poll):
+    from market_data.bar_store import BarStore
+    from market_data.bars import Bar
+
+    store = BarStore(Config.SQLITE_PATH)
+    store.upsert("NVDA", [Bar("2026-11-06", 11, 9, 10, 10, 1, 10)])  # Yahoo down since: newest bar a week old
+    store.save_report("NVDA", {"status": "valid", "issues": []})
+    lambda_function.lambda_handler({}, None)
+    assert all(a["ticker"] != "NVDA" for a in alert_store().list_alerts())
+
+
+def test_partial_refresh_is_retried_later_not_marked_done(poll, monkeypatch):
+    calls = []
+    monkeypatch.setattr(lambda_function, "refresh_daily",
+                        lambda *a: calls.append(1) or {"failed": False, "missing": ["MSFT"]})
+    monkeypatch.setattr(lambda_function, "_bar_retry_at", 0.0)
+    lambda_function.lambda_handler({}, None)
+    lambda_function.lambda_handler({}, None)  # within 30 minutes: no second download
+    assert len(calls) == 1 and "2026-11-16" not in lambda_function._bar_days
+    monkeypatch.setattr(lambda_function, "_bar_retry_at", 0.0)  # 30 minutes later
+    lambda_function.lambda_handler({}, None)
+    assert len(calls) == 2
+
+
+def test_a_refresh_error_does_not_stop_the_scan(poll, monkeypatch):
+    def boom(*a):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(lambda_function, "refresh_daily", boom)
+    monkeypatch.setattr(lambda_function, "stop_watch", boom)
+    lambda_function.lambda_handler({}, None)
+    assert any(a["ticker"] == "NVDA" for a in alert_store().list_alerts())
+
+
+def test_half_day_waits_thirty_minutes(poll, monkeypatch):
+    monkeypatch.setattr(lambda_function, "trading_date", lambda: "2026-11-27")  # 13:00 close
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: 20 / 210)  # 20 minutes in
+    assert lambda_function.lambda_handler({}, None)["body"] == "Too early in the session; skipping scan."

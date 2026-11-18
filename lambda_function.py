@@ -8,7 +8,7 @@ from utils.settings_store import MARKET_US_STOCKS, effective_settings
 from config import Config
 from api.validity import format_qty, suggest_quantity
 from utils.telegram_client import build_amount_keyboard
-from utils.market_clock import MARKET_TZ, MIN_SESSION_FRACTION, session_fraction, trading_date
+from utils.market_clock import MARKET_TZ, session_fraction, trading_date
 from datetime import datetime, timezone
 from api.trading import get_trades_store, price_of
 from api.validity import invalid_reason
@@ -18,7 +18,9 @@ from market_data.refresh import refresh_daily
 from backtesting.runner import MODULES as BACKTESTED, run_and_store
 from backtesting.store import ResearchStore
 from outcomes.update import outcome_rows
+import time
 from datetime import date
+from market_data.calendar import is_trading_day, previous_trading_day, session_minutes
 from strategies import macd, strategy_notes, volume
 from strategies.history import completed_bars
 
@@ -28,17 +30,29 @@ logger = logging.getLogger(__name__)
 _macd_days = set()  # trading dates whose MACD pass finished in this process
 _bar_days = set()  # trading dates whose bar refresh succeeded in this process
 _backtest_days = set()  # Saturdays whose weekly backtests ran in this process
+_bar_retry_at = 0.0  # time.monotonic() before which a failed or partial refresh is not tried again
+RETRY_SECONDS = 30 * 60
+MIN_SESSION_MINUTES = 30  # the volume projection is too noisy before this
 
 
 def _refresh_bars(today, alerts):
-    """Once per trading date (SQLite only): store completed bars, re-check data quality, re-measure alert outcomes."""
-    if Config.STORAGE_BACKEND != "sqlite" or today in _bar_days:
+    """Once per trading date (SQLite only): store completed bars, re-check data quality, re-measure alert outcomes.
+
+    A failed or partial download is retried every 30 minutes, not every poll.
+    """
+    global _bar_retry_at
+    if Config.STORAGE_BACKEND != "sqlite" or today in _bar_days or time.monotonic() < _bar_retry_at:
         return
     store = BarStore(Config.SQLITE_PATH)
     out = refresh_daily(store, date.fromisoformat(today), UNIVERSE + REFERENCE)
-    if out["failed"]:  # retried on the next poll
-        return
-    _bar_days.add(today)
+    if out["failed"] or out.get("missing"):
+        _bar_retry_at = time.monotonic() + RETRY_SECONDS
+        if out.get("missing"):
+            logger.warning("Bar refresh missing %s; retrying in 30 minutes", ", ".join(out["missing"]))
+        if out["failed"]:
+            return
+    else:
+        _bar_days.add(today)
     tickers = {a["ticker"] for a in alerts if a.get("ticker")}
     ResearchStore(Config.SQLITE_PATH).save_outcomes(outcome_rows(alerts, store.daily(tickers, before=today)))
 
@@ -55,11 +69,22 @@ def _weekly_backtests(today):
             logger.exception("Weekly %s backtest failed", strategy)
 
 
-def _invalid_tickers():
-    """{ticker: issues} for tickers whose stored bars cannot be trusted; they get no alert."""
+def _invalid_tickers(today):
+    """{ticker: issues} for tickers whose stored bars cannot be trusted; they get no alert.
+
+    Staleness is re-checked here from the stored dates, because reports are only rewritten when a
+    refresh succeeds: with Yahoo down for days, the last report would still say "valid".
+    """
     if Config.STORAGE_BACKEND != "sqlite":
         return {}
-    return {r["ticker"]: r["issues"] for r in BarStore(Config.SQLITE_PATH).reports() if r["status"] == "invalid"}
+    store = BarStore(Config.SQLITE_PATH)
+    bad = {r["ticker"]: r["issues"] for r in store.reports() if r["status"] == "invalid"}
+    due = previous_trading_day(date.fromisoformat(today)).isoformat()
+    for ticker in UNIVERSE:
+        newest = store.newest_date(ticker)
+        if newest and newest < due and ticker not in bad:  # no bars at all: a new install, history not needed for volume
+            bad[ticker] = [f"Stale: newest bar {newest}, expected {due}"]
+    return bad
 
 
 def _request_extras(settings, alert_id, ticker, price, stop):
@@ -127,6 +152,8 @@ def stop_watch(trades, notices, telegram, settings, price_of, today):
     """
     if not settings["telegramAlertsEnabled"] or not telegram.is_configured:
         return []
+    if not is_trading_day(date.fromisoformat(today)):  # prices do not move on a closed day: no repeat warnings
+        return []
     sent = []
     for p in trades.open_positions():
         stop = p.get("stopPrice")
@@ -170,19 +197,26 @@ def lambda_handler(event, context):
     # shortcut: on DynamoDB list_alerts is one scan page (about 1 MB), fine at a few alerts a day.
     alerts = db.list_alerts(limit=10**9)
     expire_sweep(db, telegram, settings, price_of, alerts)
-    _refresh_bars(trading_date(), alerts)
-    _weekly_backtests(trading_date())
+    today = trading_date()
+    # Each housekeeping step is isolated: its failure must not cost this poll its scan.
+    try:
+        _refresh_bars(today, alerts)
+    except Exception:
+        logger.exception("Bar refresh failed")
+    _weekly_backtests(today)
     if Config.STORAGE_BACKEND == "sqlite":  # the mock account lives only on SQLite
-        stop_watch(get_trades_store(), db, telegram, settings, price_of, trading_date())
+        try:
+            stop_watch(get_trades_store(), db, telegram, settings, price_of, today)
+        except Exception:
+            logger.exception("Stop watch failed")
 
     fraction = session_fraction()
     if fraction is None:
         logger.info("Market closed; skipping scan.")
         return {"statusCode": 200, "body": "Market closed; skipping scan."}
-    if fraction < MIN_SESSION_FRACTION:
+    if fraction * (session_minutes(date.fromisoformat(today)) or 390) < MIN_SESSION_MINUTES:
         logger.info("Too early in the session; skipping scan.")
         return {"statusCode": 200, "body": "Too early in the session; skipping scan."}
-    today = trading_date()
 
     logger.info("Starting market scan poll...")
     
@@ -250,7 +284,7 @@ def lambda_handler(event, context):
         )
         seen.add((ticker, sig["strategy"], today))
         held.add(ticker)
-    for ticker, issues in _invalid_tickers().items():
+    for ticker, issues in _invalid_tickers(today).items():
         logger.info("%s skipped: %s", ticker, "; ".join(issues))
         held.add(ticker)
 

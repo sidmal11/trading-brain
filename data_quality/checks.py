@@ -8,6 +8,7 @@ from statistics import median
 from market_data.calendar import previous_trading_day
 
 EXTREME_VOLUME = 20  # times the median of the previous 50 bars
+RECENT_BARS = 500  # strategies.history.HISTORY_BARS: a bad bar older than this is read by no strategy
 _SHOW = 3  # dates listed per issue
 
 
@@ -26,14 +27,18 @@ def check_bars(bars, today: date, reference_dates: set | None) -> dict:
     dates = [b.date for b in bars]
     if dupes := sorted({d for d in dates if dates.count(d) > 1}):
         invalid.append(f"Duplicate dates: {_dates(dupes)}")
-    missing = [b.date for b in bars if None in (b.open, b.high, b.low, b.close)]
-    if missing:
-        invalid.append(f"Missing prices on {_dates(missing)}")
+    recent = set(dates[-RECENT_BARS:])
+
+    def flag(ds, text):
+        # Inside the window strategies read, a bad bar stops analysis; older ones are only shown.
+        if ds:
+            (invalid if any(d in recent for d in ds) else warn).append(f"{text} {_dates(ds)}")
+
+    flag([b.date for b in bars if None in (b.open, b.high, b.low, b.close)], "Missing prices on")
     priced = [b for b in bars if None not in (b.open, b.high, b.low, b.close)]
-    if bad := [b.date for b in priced if min(b.open, b.high, b.low, b.close) <= 0]:
-        invalid.append(f"Price at or below zero on {_dates(bad)}")
-    if bad := [b.date for b in priced if b.low > min(b.open, b.close) or b.high < max(b.open, b.close)]:
-        invalid.append(f"High and low do not contain open and close on {_dates(bad)}")
+    flag([b.date for b in priced if min(b.open, b.high, b.low, b.close) <= 0], "Price at or below zero on")
+    flag([b.date for b in priced if b.low > min(b.open, b.close) or b.high < max(b.open, b.close)],
+         "High and low do not contain open and close on")
     due = previous_trading_day(today).isoformat()
     if dates[-1] < due:
         invalid.append(f"Stale: newest bar {dates[-1]}, expected {due}")

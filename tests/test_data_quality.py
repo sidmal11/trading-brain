@@ -64,3 +64,22 @@ def test_zero_and_extreme_volume_are_warnings():
     series[-1] = series[-1]._replace(volume=21_000)
     r = check_bars(series, TODAY, None)
     assert r["status"] == "warn" and any("Volume" in i for i in r["issues"])
+
+
+def _long(n):
+    out, day = [], date(2024, 1, 1)
+    from datetime import timedelta
+    while len(out) < n:
+        if day.weekday() < 5:
+            out.append(Bar(day.isoformat(), 11.0, 9.0, 10.0, 10.0, 1000, 10.0))
+        day += timedelta(days=1)
+    return out[:-1] + [out[-1]._replace(date="2026-11-17")]
+
+
+def test_a_broken_bar_outside_the_decision_window_is_only_a_warning():
+    series = _long(600)
+    series[10] = series[10]._replace(high=9.5)  # 590 bars back: no strategy reads it
+    r = check_bars(series, TODAY, None)
+    assert r["status"] == "warn" and any("High and low" in i for i in r["issues"])
+    series[-5] = series[-5]._replace(high=9.5)  # inside the last 500 bars
+    assert check_bars(series, TODAY, None)["status"] == "invalid"

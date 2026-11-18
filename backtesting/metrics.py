@@ -55,7 +55,10 @@ def _series(returns) -> dict:
 
 
 def equity_stats(trades, bars_by_ticker, dates, weight) -> dict:
-    """Daily equity over `dates` from closed trades, each marked to its ticker's close while held."""
+    """Daily equity over `dates` from closed trades only, each marked to its ticker's close while held.
+
+    Trades still open at the end are left out, so the last weeks can understate exposure and drawdown.
+    """
     if not dates:
         return {**_NONE, "exposure": None, "turnover": None}
     daily = {d: 0.0 for d in dates}

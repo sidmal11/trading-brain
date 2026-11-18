@@ -80,3 +80,9 @@ def test_wider_distance_setting(notices):
 
 def test_telegram_alerts_off_sends_nothing(notices):
     assert run(notices, [pos()], 100.5, telegramAlertsEnabled=False) == ([], [])
+
+
+def test_no_warning_on_a_weekend_or_holiday(notices):
+    tg = Telegram()
+    out = lambda_function.stop_watch(Trades([pos()]), notices, tg, defaults(), lambda t: 100.5, "2026-11-21")
+    assert out == [] and tg.sent == []

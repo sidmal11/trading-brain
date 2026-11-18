@@ -81,3 +81,24 @@ def test_gaps_are_checked_against_spy(tmp_path):
     refresh_daily(store, TODAY, ["AAPL", "SPY"], download=Download({"AAPL": bars(holey), "SPY": bars()}))
     assert store.report("AAPL")["status"] == "warn"
     assert store.report("SPY")["status"] == "valid"
+
+
+def test_tickers_missing_from_a_batch_are_reported_so_the_poll_retries(tmp_path):
+    store = BarStore(str(tmp_path / "s.db"))
+    store.upsert("AAPL", bars(DATES[:3]))
+    store.upsert("MSFT", bars(DATES[:3]))
+    out = refresh_daily(store, TODAY, ["AAPL", "MSFT"], download=Download({"AAPL": bars()}))
+    assert out["failed"] is False and out["missing"] == ["MSFT"]
+    assert store.newest_date("AAPL") == "2026-11-17"  # what arrived is kept
+
+
+def test_an_empty_re_download_after_a_split_counts_as_missing(tmp_path):
+    store = BarStore(str(tmp_path / "s.db"))
+    store.upsert("AAPL", bars(["2026-11-10", "2026-11-11"] + DATES[:3]))
+
+    def download(tickers, start=None, period=None):
+        return {} if period else {"AAPL": bars(scale=0.5)}
+
+    out = refresh_daily(store, TODAY, ["AAPL"], download=download)
+    assert out["missing"] == ["AAPL"] and out["refetched"] == []
+    assert {b.close for b in store.daily(["AAPL"], "2026-12-01")["AAPL"]} == {10.0}  # old rows untouched
