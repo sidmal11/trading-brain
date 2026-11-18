@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timezone
 
 from utils.market_clock import session_fraction
+from indicators import rsi
 
 logger = logging.getLogger(__name__)
 
@@ -80,35 +81,17 @@ def _trend(last, previous, rsi):
 
 
 def compute_rsi(closes, period=14):
-    """Wilder's RSI over a list of closes, or None when there is too little data.
+    """Wilder's RSI of the latest close (indicators.rsi), rounded to 2 decimals; None when it cannot be measured.
 
-    Returning None rather than a neutral 50 keeps a thin series honest: 50 is a
-    real reading that means balance, and inventing it would put a contract on
-    the dashboard claiming a momentum it was never measured to have.
+    None, not a neutral 50, for a thin series or one with a missing close (Yahoo can return NaN for today):
+    50 is a real reading that means balance, and inventing it would claim a momentum never measured.
     """
     if not closes or len(closes) <= period:
         return None
-
-    gains = []
-    losses = []
-    for earlier, later in zip(closes, closes[1:]):
-        change = later - earlier
-        gains.append(max(change, 0.0))
-        losses.append(max(-change, 0.0))
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    # Wilder smoothing over the remainder of the series.
-    for gain, loss in zip(gains[period:], losses[period:]):
-        avg_gain = (avg_gain * (period - 1) + gain) / period
-        avg_loss = (avg_loss * (period - 1) + loss) / period
-
-    if avg_loss == 0:
-        return 100.0 if avg_gain > 0 else 50.0
-
-    rs = avg_gain / avg_loss
-    return round(100 - (100 / (1 + rs)), 2)
+    try:
+        return round(rsi(closes, period)[-1], 2)
+    except ValueError:
+        return None
 
 
 # ── Sentiment parsing ─────────────────────────────────────────────────────────

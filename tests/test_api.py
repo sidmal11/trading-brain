@@ -518,3 +518,43 @@ def test_health_status(client, sqlite_api, monkeypatch):
 def test_health_status_before_any_poll(client, sqlite_api):
     body = client.get("/api/v1/health-status").json()
     assert body["lastPollAt"] is None and body["pollStale"] is True and body["newestBar"] is None
+
+
+# ── R3: indicators per ticker ─────────────────────────────────────────────────
+
+def _bars(n):
+    from datetime import date, timedelta
+    from market_data.bars import Bar
+
+    out, day, price = [], date(2024, 1, 1), 100.0
+    while len(out) < n:
+        if day.weekday() < 5:
+            price *= 1.001 if len(out) % 3 else 0.998
+            out.append(Bar(day.isoformat(), price * 1.01, price * 0.99, price, price * 0.999, 1_000_000 + len(out), price))
+        day += timedelta(days=1)
+    return out
+
+
+def test_indicators_route_gives_latest_values(client, sqlite_api):
+    from market_data.bar_store import BarStore
+
+    BarStore(sqlite_api).upsert("AAPL", _bars(300))
+    body = client.get("/api/v1/indicators/aapl").json()
+    assert body["ticker"] == "AAPL" and body["bars"] == 300 and body["asOf"]
+    v = body["values"]
+    assert v["sma200"] is not None and v["rsi14"] is not None and v["adx14"] is not None and v["obv"] is not None
+    assert body["warmupMissing"] == []  # 300 bars warm up everything, the 252-bar percentiles included
+
+
+def test_indicators_route_reports_warm_up_on_short_history(client, sqlite_api):
+    from market_data.bar_store import BarStore
+
+    BarStore(sqlite_api).upsert("NEW", _bars(60))
+    body = client.get("/api/v1/indicators/NEW").json()
+    assert body["values"]["sma200"] is None and "sma200" in body["warmupMissing"]
+    assert body["values"]["sma50"] is not None
+
+
+def test_indicators_route_404_and_bad_ticker(client, sqlite_api):
+    assert client.get("/api/v1/indicators/ZZZZ").status_code == 404
+    assert client.get("/api/v1/indicators/bad%20ticker!").status_code == 422

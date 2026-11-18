@@ -4,6 +4,8 @@ Bars are (date "YYYY-MM-DD", high, low, close), oldest first, completed bars
 only. Every window is counted back from the last bar in the list.
 """
 
+from indicators import ema, macd, sma  # noqa: F401  (the library; re-exported for callers and tests)
+
 MIN_BARS = 230  # 200 for SMA200 plus 30 bars of cross history
 
 ITEMS = [
@@ -14,34 +16,6 @@ ITEMS = [
     ("reward_risk", "Stop within 8%, target 1.5x the risk", 15),
 ]
 BUY_KEYS = ("uptrend", "macd", "price_action", "reward_risk")
-
-
-def sma(values, n):
-    """Simple moving average; None until n values. A running window sum, so a 5-year backtest stays fast."""
-    out = [None] * len(values)
-    total = 0.0
-    for i, v in enumerate(values):
-        total += v
-        if i >= n:
-            total -= values[i - n]
-        if i >= n - 1:
-            out[i] = total / n
-    return out
-
-
-def ema(values, n):
-    """pandas ewm(span=n, adjust=False): alpha 2/(n+1), seeded with the first value."""
-    alpha = 2 / (n + 1)
-    out = []
-    for v in values:
-        out.append(v if not out else alpha * v + (1 - alpha) * out[-1])
-    return out
-
-
-def macd(closes):
-    line = [a - b for a, b in zip(ema(closes, 12), ema(closes, 26))]
-    signal = ema(line, 9)
-    return line, signal, [m - s for m, s in zip(line, signal)]
 
 
 def _plural(k, word):

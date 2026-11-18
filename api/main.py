@@ -311,6 +311,22 @@ def get_signals(limit: int = Query(MAX_ENRICHED_SIGNALS, ge=1, le=MAX_ENRICHED_S
     return signals
 
 
+@router.get("/indicators/{ticker}")
+def get_indicators(ticker: str = Path(..., pattern=r"^[A-Za-z0-9.\-]{1,10}$")):
+    """The latest value of every indicator over the stored completed daily bars of one ticker."""
+    ticker = ticker.upper()
+    bars = []
+    if Config.STORAGE_BACKEND == "sqlite":
+        from market_data.bar_store import BarStore
+
+        bars = BarStore(Config.SQLITE_PATH).daily([ticker], before=trading_date()).get(ticker, [])
+    if not bars:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No stored daily bars for {ticker}.")
+    from indicators.snapshot import latest
+
+    return {"ticker": ticker, **latest(bars)}
+
+
 @router.get("/health-status")
 def get_health_status():
     """For the dashboard's health line: last poll, AI state, data quality. Off SQLite there is no record."""
