@@ -182,6 +182,7 @@ def poll_env(monkeypatch, tmp_path):
     monkeypatch.setattr(lambda_function, "_macd_days", set())
     monkeypatch.setattr(lambda_function, "refresh_daily", lambda *a, **k: {"failed": False})  # no Yahoo
     monkeypatch.setattr(lambda_function, "_bar_days", set())
+    monkeypatch.setattr(lambda_function, "_backtest_days", set())
     sent = []
 
     class Resp:

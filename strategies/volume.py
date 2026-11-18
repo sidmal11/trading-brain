@@ -1,5 +1,7 @@
 from strategies.indicators import checklist
 
+VERSION = "1"  # bump on any rule change; stored with every backtest run
+
 
 def evaluate(ticker, bars, scan_result, threshold):
     score = scan_result["volume_score"]

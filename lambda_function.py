@@ -15,6 +15,9 @@ from api.validity import invalid_reason
 from utils.api_client import REFERENCE, UNIVERSE
 from market_data.bar_store import BarStore
 from market_data.refresh import refresh_daily
+from backtesting.runner import MODULES as BACKTESTED, run_and_store
+from backtesting.store import ResearchStore
+from outcomes.update import outcome_rows
 from datetime import date
 from strategies import macd, strategy_notes, volume
 from strategies.history import completed_bars
@@ -24,15 +27,32 @@ logger = logging.getLogger(__name__)
 
 _macd_days = set()  # trading dates whose MACD pass finished in this process
 _bar_days = set()  # trading dates whose bar refresh succeeded in this process
+_backtest_days = set()  # Saturdays whose weekly backtests ran in this process
 
 
-def _refresh_bars(today):
-    """Once per trading date: store yesterday's completed bars and re-check data quality (SQLite only)."""
+def _refresh_bars(today, alerts):
+    """Once per trading date (SQLite only): store completed bars, re-check data quality, re-measure alert outcomes."""
     if Config.STORAGE_BACKEND != "sqlite" or today in _bar_days:
         return
-    out = refresh_daily(BarStore(Config.SQLITE_PATH), date.fromisoformat(today), UNIVERSE + REFERENCE)
-    if not out["failed"]:  # a failed refresh is retried on the next poll
-        _bar_days.add(today)
+    store = BarStore(Config.SQLITE_PATH)
+    out = refresh_daily(store, date.fromisoformat(today), UNIVERSE + REFERENCE)
+    if out["failed"]:  # retried on the next poll
+        return
+    _bar_days.add(today)
+    tickers = {a["ticker"] for a in alerts if a.get("ticker")}
+    ResearchStore(Config.SQLITE_PATH).save_outcomes(outcome_rows(alerts, store.daily(tickers, before=today)))
+
+
+def _weekly_backtests(today):
+    """Saturday (US Eastern): re-run every strategy's backtest on the stored bars."""
+    if Config.STORAGE_BACKEND != "sqlite" or today in _backtest_days or date.fromisoformat(today).weekday() != 5:
+        return
+    _backtest_days.add(today)  # once, even if a run fails: a failing run would otherwise repeat every poll
+    for strategy in sorted(BACKTESTED):
+        try:
+            run_and_store(BarStore(Config.SQLITE_PATH), ResearchStore(Config.SQLITE_PATH), strategy, UNIVERSE, today)
+        except Exception:
+            logger.exception("Weekly %s backtest failed", strategy)
 
 
 def _invalid_tickers():
@@ -150,7 +170,8 @@ def lambda_handler(event, context):
     # shortcut: on DynamoDB list_alerts is one scan page (about 1 MB), fine at a few alerts a day.
     alerts = db.list_alerts(limit=10**9)
     expire_sweep(db, telegram, settings, price_of, alerts)
-    _refresh_bars(trading_date())
+    _refresh_bars(trading_date(), alerts)
+    _weekly_backtests(trading_date())
     if Config.STORAGE_BACKEND == "sqlite":  # the mock account lives only on SQLite
         stop_watch(get_trades_store(), db, telegram, settings, price_of, trading_date())
 

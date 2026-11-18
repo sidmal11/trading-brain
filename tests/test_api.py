@@ -431,3 +431,41 @@ def test_data_quality_route_lists_reports(client, monkeypatch, tmp_path):
     BarStore(str(tmp_path / "q.db")).save_report("AAPL", {"status": "warn", "issues": ["Volume 0 on 2026-11-16"]})
     [row] = client.get("/api/v1/data-quality").json()
     assert row["ticker"] == "AAPL" and row["status"] == "warn" and row["issues"] == ["Volume 0 on 2026-11-16"]
+
+
+@pytest.fixture
+def research(client, monkeypatch, tmp_path):
+    from backtesting.store import ResearchStore
+
+    monkeypatch.setattr(api_main.Config, "STORAGE_BACKEND", "sqlite")
+    monkeypatch.setattr(api_main.Config, "SQLITE_PATH", str(tmp_path / "r.db"))
+    return ResearchStore(str(tmp_path / "r.db"))
+
+
+def test_strategies_list_without_runs(client, research):
+    rows = client.get("/api/v1/strategies").json()
+    assert [r["id"] for r in rows] == ["macd", "volume"]
+    assert all(r["backtest"] is None and r["live"]["trades"] == 0 and r["live"]["winRate"] is None for r in rows)
+    assert rows[0]["name"] == "MACD trend" and rows[0]["version"] == "1"
+
+
+def test_strategy_performance_has_backtest_trades_and_live_outcomes(client, research):
+    window = {"trades": 2, "winRate": 0.5}
+    trade = {"ticker": "AAPL", "signal_date": "2026-01-05", "entry_date": "2026-01-06", "entry": 100.0,
+             "exit_date": "2026-01-08", "exit": 110.0, "reason": "target", "ret": 0.1, "mfe": 0.1, "mae": -0.01,
+             "bars_held": 3}
+    research.save_run("macd", "1", "1", {"slippageBps": 5.0}, {"inSample": window, "holdout": window}, [trade])
+    research.save_outcomes([
+        {"alertId": "a1", "ticker": "AAPL", "strategy": "macd", "signalDate": "2026-11-10", "ret": 0.05, "barsHeld": 4,
+         "reason": "target"},
+        {"alertId": "a2", "ticker": "MSFT", "strategy": "macd", "signalDate": "2026-11-12", "ret": None, "barsHeld": None,
+         "reason": "open"},
+    ])
+    body = client.get("/api/v1/strategies/macd/performance").json()
+    assert body["strategy"]["backtest"]["result"]["holdout"]["winRate"] == 0.5
+    assert body["strategy"]["live"]["trades"] == 1 and body["strategy"]["live"]["open"] == 1
+    assert body["trades"][0]["ticker"] == "AAPL" and [o["alertId"] for o in body["outcomes"]] == ["a2", "a1"]
+
+
+def test_unknown_strategy_is_404(client, research):
+    assert client.get("/api/v1/strategies/nope/performance").status_code == 404

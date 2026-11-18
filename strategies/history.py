@@ -9,13 +9,15 @@ from market_data.bar_store import BarStore
 
 logger = logging.getLogger(__name__)
 
+HISTORY_BARS = 500  # the window every live and backtest decision sees (about two years)
 _cache = {}  # {"today": str, "bars": {ticker: [Bar]}}; a later day replaces it
 
 
 def completed_bars(tickers, today):
     """{ticker: [(date, high, low, close)]}, oldest first, without today's partial bar. Failure gives {}."""
     if Config.STORAGE_BACKEND == "sqlite":
-        return BarStore(Config.SQLITE_PATH).daily(tickers, before=today)  # filled by market_data.refresh
+        stored = BarStore(Config.SQLITE_PATH).daily(tickers, before=today)  # filled by market_data.refresh
+        return {t: b[-HISTORY_BARS:] for t, b in stored.items()}
     if _cache.get("today") == today:
         return _cache["bars"]
     try:

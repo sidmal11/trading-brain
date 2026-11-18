@@ -91,6 +91,7 @@ def poll(monkeypatch, tmp_path):
     monkeypatch.setattr(FakeLlm, "calls", [])
     monkeypatch.setattr(lambda_function, "refresh_daily", lambda *a, **k: {"failed": False})  # no Yahoo
     monkeypatch.setattr(lambda_function, "_bar_days", set())
+    monkeypatch.setattr(lambda_function, "_backtest_days", set())
     http = Telegram()
     monkeypatch.setattr(tc.requests, "post", http)
     http.prices = {}  # the sweep's quotes; a ticker not listed has no price this poll
@@ -603,3 +604,32 @@ def test_poll_skips_a_ticker_with_invalid_bars(poll):
     BarStore(Config.SQLITE_PATH).save_report("NVDA", {"status": "invalid", "issues": ["Stale: newest bar 2026-11-10"]})
     lambda_function.lambda_handler({}, None)
     assert all(a["ticker"] != "NVDA" for a in alert_store().list_alerts())
+
+
+def test_saturday_poll_runs_both_backtests_once(poll, monkeypatch):
+    runs = []
+    monkeypatch.setattr(lambda_function, "trading_date", lambda: "2026-11-21")  # a Saturday
+    monkeypatch.setattr(lambda_function, "run_and_store", lambda bars, store, strategy, tickers, today: runs.append(strategy))
+    lambda_function.lambda_handler({}, None)
+    lambda_function.lambda_handler({}, None)
+    assert sorted(runs) == ["macd", "volume"]
+
+
+def test_weekday_poll_runs_no_backtest(poll, monkeypatch):
+    runs = []
+    monkeypatch.setattr(lambda_function, "run_and_store", lambda *a: runs.append(a))
+    lambda_function.lambda_handler({}, None)  # Monday 2026-11-16
+    assert runs == []
+
+
+def test_outcomes_are_stored_after_the_bar_refresh(poll):
+    from backtesting.store import ResearchStore
+    from market_data.bar_store import BarStore
+    from market_data.bars import Bar
+
+    alert_store().save_alert("o1", "MSFT", "MACD", "x", trading_date="2026-11-12", price=100.0, strategy="macd",
+                             stop=95.0, target=110.0)
+    BarStore(Config.SQLITE_PATH).upsert("MSFT", [Bar("2026-11-13", 112, 99, 111, 100, 1, 111)])
+    lambda_function.lambda_handler({}, None)
+    [row] = ResearchStore(Config.SQLITE_PATH).outcomes("macd")
+    assert row["alertId"] == "o1" and row["reason"] == "target"

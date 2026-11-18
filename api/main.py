@@ -409,6 +409,48 @@ def get_data_quality():
     return BarStore(Config.SQLITE_PATH).reports()
 
 
+STRATEGY_NAMES = {"macd": "MACD trend", "volume": "Volume surge"}
+
+
+def _strategy_summary(store, strategy_id):
+    from backtesting.metrics import trade_stats
+    from backtesting.runner import MODULES
+
+    run = store.latest_run(strategy_id)
+    live = store.outcomes(strategy_id)
+    stats = trade_stats([{"ret": o.get("ret"), "bars_held": o.get("barsHeld")} for o in live])
+    return {
+        "id": strategy_id, "name": STRATEGY_NAMES[strategy_id], "version": MODULES[strategy_id].VERSION,
+        "backtest": None if run is None else {k: run[k] for k in
+                                              ("id", "createdAt", "strategyVersion", "backtestVersion", "params", "result")},
+        "live": {**stats, "open": sum(o.get("ret") is None for o in live)},
+    }
+
+
+@router.get("/strategies")
+def get_strategies():
+    """Each strategy with its latest stored backtest and its live alert outcomes (SQLite only)."""
+    if Config.STORAGE_BACKEND != "sqlite":
+        return []
+    from backtesting.store import ResearchStore
+
+    store = ResearchStore(Config.SQLITE_PATH)
+    return [_strategy_summary(store, s) for s in sorted(STRATEGY_NAMES)]
+
+
+@router.get("/strategies/{strategy_id}/performance")
+def get_strategy_performance(strategy_id: str = Path(..., max_length=32)):
+    if strategy_id not in STRATEGY_NAMES or Config.STORAGE_BACKEND != "sqlite":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown strategy.")
+    from backtesting.store import ResearchStore
+
+    store = ResearchStore(Config.SQLITE_PATH)
+    summary = _strategy_summary(store, strategy_id)
+    run = summary["backtest"]
+    return {"strategy": summary, "trades": store.run_trades(run["id"], limit=200) if run else [],
+            "outcomes": store.outcomes(strategy_id)}
+
+
 @router.get("/positions")
 def get_positions():
     if Config.STORAGE_BACKEND != "sqlite":

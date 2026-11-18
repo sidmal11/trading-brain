@@ -17,9 +17,15 @@ BUY_KEYS = ("uptrend", "macd", "price_action", "reward_risk")
 
 
 def sma(values, n):
+    """Simple moving average; None until n values. A running window sum, so a 5-year backtest stays fast."""
     out = [None] * len(values)
-    for i in range(n - 1, len(values)):
-        out[i] = sum(values[i - n + 1:i + 1]) / n
+    total = 0.0
+    for i, v in enumerate(values):
+        total += v
+        if i >= n:
+            total -= values[i - n]
+        if i >= n - 1:
+            out[i] = total / n
     return out
 
 

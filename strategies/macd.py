@@ -1,5 +1,7 @@
 from strategies.indicators import checklist, macd_buy
 
+VERSION = "1"  # bump on any rule change; stored with every backtest run
+
 
 def evaluate(ticker, bars, volume_score, threshold):
     if volume_score is None:
