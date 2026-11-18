@@ -216,8 +216,8 @@ class TelegramClient:
         data = self._post("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         return bool(data and data.get("ok"))
 
-    def expire_message(self, chat_id, message_id, sent_at, reason):
-        """Take an expired request out of a chat.
+    def expire_message(self, chat_id, message_id, sent_at, reason) -> bool:
+        """Take an expired request out of a chat; returns whether Telegram took the delete or edit.
 
         Telegram deletes only messages under 48 hours old; an older one (or a refused
         delete) is edited to the reason, and an edit without reply_markup drops the buttons.
@@ -227,8 +227,9 @@ class TelegramClient:
         except (AttributeError, ValueError):
             recent = False
         if recent and self.delete_message(chat_id, message_id):
-            return
-        self._post("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": reason})
+            return True
+        data = self._post("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": reason})
+        return bool(data and data.get("ok"))
 
     def send_text(self, chat_id, text: str):
         """Plain reply to a chat, used for subscribe and unsubscribe confirmations."""

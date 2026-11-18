@@ -435,10 +435,10 @@ def _ago(hours):
     return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
 
-def _pending(messages=None, legacy_message_id=None, **extra):
+def _pending(messages=None, legacy_message_id=None, strategy="volume", **extra):
     db = alert_store()
     db.save_alert(alert_id="a1", ticker="NVDA", signal_details="v", pros_cons="p", price=182.4,
-                  strategy="volume", trading_date="2026-11-13", chat_id=ADMIN,
+                  strategy=strategy, trading_date="2026-11-13", chat_id=ADMIN,
                   message_id=legacy_message_id, messages=messages, **extra)
 
 
@@ -503,12 +503,52 @@ def test_a_valid_or_unpriced_request_is_left_alone(poll, monkeypatch):
     assert poll.calls == []
 
 
-def test_request_expired_in_session_is_not_raised_again_that_day(poll):
+def test_request_expired_today_holds_the_ticker_until_the_next_day(poll, monkeypatch):
+    today = real_trading_date()  # expiredAt is stamped by the real clock
+    monkeypatch.setattr(lambda_function, "trading_date", lambda: today)
+    _pending(strategy="macd")  # a MACD request, so `seen` cannot block the volume alert
+    poll.prices["NVDA"] = 190.0
+    lambda_function.lambda_handler({}, None)  # the sweep expires it, then the scan sees NVDA
+    db = alert_store()
+    assert [a["status"] for a in db.list_alerts()] == ["EXPIRED"]
+    tomorrow = (datetime.fromisoformat(today) + timedelta(days=1)).date().isoformat()
+    monkeypatch.setattr(lambda_function, "trading_date", lambda: tomorrow)
     lambda_function.lambda_handler({}, None)
+    assert sorted(a["status"] for a in db.list_alerts()) == ["EXPIRED", "PENDING"]
+
+
+def _alerts_enabled(monkeypatch, on):
+    from utils import settings_store
+
+    base = settings_store.defaults()
+    monkeypatch.setattr(lambda_function, "effective_settings", lambda: {**base, "telegramAlertsEnabled": on})
+
+
+def test_no_admin_note_when_alerts_are_off_and_no_copy_was_cleaned(poll, monkeypatch):
+    _alerts_enabled(monkeypatch, False)
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: None)
+    _pending()
     poll.prices["NVDA"] = 190.0
     lambda_function.lambda_handler({}, None)
-    alerts = alert_store().list_alerts()
-    assert [a["status"] for a in alerts] == ["EXPIRED"]
+    assert alert_store().get_alert("a1")["status"] == "EXPIRED"
+    assert poll.sends() == []
+
+
+def test_admin_note_when_alerts_are_off_but_a_copy_was_cleaned(poll, monkeypatch):
+    _alerts_enabled(monkeypatch, False)
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: None)
+    _pending(messages=[{"chatId": SUB, "messageId": 8, "sentAt": _ago(2)}])
+    poll.prices["NVDA"] = 190.0
+    lambda_function.lambda_handler({}, None)
+    assert [(str(p["chat_id"]), p["text"]) for p in poll.sends()] == [(ADMIN, EXPIRED_TEXT)]
+
+
+def test_admin_note_when_alerts_are_on_without_copies(poll, monkeypatch):
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: None)
+    _pending()
+    poll.prices["NVDA"] = 190.0
+    lambda_function.lambda_handler({}, None)
+    assert [(str(p["chat_id"]), p["text"]) for p in poll.sends()] == [(ADMIN, EXPIRED_TEXT)]
 
 
 def test_ticker_rejected_today_is_skipped_and_allowed_next_day(poll, monkeypatch):

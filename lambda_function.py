@@ -51,6 +51,8 @@ def expire_sweep(db, telegram, settings, price_of, alerts=None):
     for alert in alerts if alerts is not None else db.list_alerts(limit=10**9):
         if alert.get("status") != "PENDING":
             continue
+        # shortcut: one Yahoo quote per open request per poll, around the clock; move to a lighter
+        # price-only quote if open requests grow.
         price = price_of(alert["ticker"])  # None skips this request until the next poll
         reason = invalid_reason({k: float(alert[k]) for k in ("stopPrice", "priceAtAlert") if alert.get(k) is not None},
                                 price, settings)
@@ -61,10 +63,16 @@ def expire_sweep(db, telegram, settings, price_of, alerts=None):
         if not telegram.is_configured:
             continue
         note = f"{alert['ticker']} request expired: {reason}"
+        cleaned = 0
         for copy in _telegram_copies(alert):
-            telegram.expire_message(copy["chatId"], int(copy["messageId"]), copy.get("sentAt"), note)
-        for chat_id in sorted(telegram.admin_chat_ids):
-            telegram.send_text(chat_id, note)
+            if telegram.expire_message(copy["chatId"], int(copy["messageId"]), copy.get("sentAt"), note):
+                cleaned += 1
+            else:
+                logger.warning("Could not clean %s copy %s in chat %s", alert["ticker"], copy["messageId"], copy["chatId"])
+        # With alerts off, a note about a request nobody saw on Telegram would be noise.
+        if settings["telegramAlertsEnabled"] or cleaned:
+            for chat_id in sorted(telegram.admin_chat_ids):
+                telegram.send_text(chat_id, note)
     return expired
 
 

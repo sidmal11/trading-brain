@@ -178,8 +178,14 @@ def test_copy_older_than_48_hours_is_edited_to_the_reason_without_buttons(monkey
 
 def test_failed_delete_falls_back_to_an_edit(monkeypatch):
     client, calls = _recording_client(monkeypatch, ok=False)
-    client.expire_message("2000", 7, _ago(47.99), "r")
+    assert client.expire_message("2000", 7, _ago(47.99), "r") is False  # the edit failed too
     assert [m for m, _ in calls] == ["deleteMessage", "editMessageText"]
+
+
+def test_expire_message_reports_success(monkeypatch):
+    client, _ = _recording_client(monkeypatch)
+    assert client.expire_message("2000", 7, _ago(2), "r") is True
+    assert client.expire_message("2000", 7, _ago(50), "r") is True
 
 
 def test_broadcast_returns_every_recipient_message(monkeypatch):
