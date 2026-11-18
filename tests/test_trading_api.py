@@ -409,3 +409,17 @@ def test_one_dollar_is_the_minimum_not_below_it(env):
     env.price = 153.7  # 1 / 153.7 rounds down to 0.006506 shares, $0.99996 before cent rounding
     order = env.approve(dollars=1).json()["order"]
     assert (order["quantity"], order["status"]) == (0.006506, "FILLED")
+
+
+def test_dashboard_cannot_buy_a_rejected_request(env):
+    env.client.post("/api/v1/alerts/a1/review", json={"decision": "REJECTED"})
+    r = env.approve()
+    assert r.status_code == 409 and r.json()["detail"] == "Already rejected."
+    assert env.client.get("/api/v1/orders").json() == [] and env.status() == "REJECTED"
+
+
+def test_dashboard_cannot_reject_a_bought_request(env):
+    env.approve()
+    r = env.client.post("/api/v1/alerts/a1/review", json={"decision": "REJECTED"})
+    assert r.status_code == 409 and r.json()["detail"] == "Already bought. Close the position instead."
+    assert env.status() == "APPROVED"

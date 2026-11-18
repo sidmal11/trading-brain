@@ -35,6 +35,10 @@ def live_price(snapshot):
     return snapshot["price"]
 
 
+ALREADY_REJECTED = "Already rejected."
+ALREADY_BOUGHT = "Already bought. Close the position instead."
+
+
 def price_of(ticker):
     snapshot = market_source.quote(ticker)
     return live_price(snapshot) if snapshot else None
@@ -87,6 +91,8 @@ def execute_approval(alert, db, shares=None, dollars=None):
     alert_id, ticker = alert["alertId"], alert["ticker"]
     if alert.get("status") == "EXPIRED":  # before the trading switch: never status-flip an expired alert
         raise TradeRefused(f"Request expired: {alert.get('expiredReason') or 'No longer valid.'}")
+    if alert.get("status") == "REJECTED":  # a leftover button or another admin's copy must not undo a rejection
+        raise TradeRefused(ALREADY_REJECTED)
     settings = effective_settings()
     store = get_trades_store() if settings_store() is not None else None  # the trades file lives only on SQLite
     existing = store.live_buy(alert_id) if store else None
@@ -129,6 +135,16 @@ def execute_approval(alert, db, shares=None, dollars=None):
     order = _settle(store, order, lambda broker: broker.buy(ticker, quantity, order["id"]), price)
     _set_approved(db, alert_id)
     return order
+
+
+def reject(alert, db):
+    """Record a rejection, unless the alert already has a buy (its position is closed with Close, not relabelled)."""
+    store = get_trades_store() if settings_store() is not None else None
+    if store and store.live_buy(alert["alertId"]):
+        raise TradeRefused(ALREADY_BOUGHT)
+    if not db.update_alert_status(alert["alertId"], "REJECTED"):
+        raise DecisionNotRecorded(alert["alertId"])
+    return True
 
 
 def close_position(ticker):

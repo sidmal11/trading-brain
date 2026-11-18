@@ -370,6 +370,8 @@ def review_alert(
     try:
         if body.decision == "APPROVED":
             order = trading.execute_approval(existing, db, shares=body.shares, dollars=body.dollars)
+        elif body.decision == "REJECTED":
+            trading.reject(existing, db)
         elif not db.update_alert_status(alert_id, body.decision):
             raise trading.DecisionNotRecorded(alert_id)
     except trading.TradeRefused as refused:
@@ -636,10 +638,12 @@ def telegram_webhook(
             order = trading.execute_approval(existing, db, shares=shares, dollars=dollars)
             recorded = True
         else:
-            recorded = db.update_alert_status(alert_id, decision)
+            recorded = trading.reject(existing, db)
     except trading.TradeRefused as refused:
-        # Buttons stay: the operator can tap again once the cause is gone.
         telegram.answer_callback_query(cb_id, refused.reason)
+        if refused.reason in (trading.ALREADY_REJECTED, trading.ALREADY_BOUGHT):  # the decision stands
+            return {"ok": True, "alertId": alert_id, "status": existing.get("status")}
+        # Buttons stay: the operator can tap again once the cause is gone.
         telegram.send_text(chat_id, f"{ticker} not bought: {refused.reason}")
         return {"ok": True, "alertId": alert_id, "status": "PENDING"}
     except trading.DecisionNotRecorded:
@@ -661,7 +665,9 @@ def telegram_webhook(
         telegram.answer_callback_query(cb_id, f"{ticker}: order in progress.")
     else:
         db.clear_prompt(chat_id)
-        if order is not None:
+        if order is not None and existing.get("status") == "APPROVED":
+            answer = f"Already bought {format_qty(order['quantity'])} {ticker} (MOCK)"  # a repeat tap: one buy, one message
+        elif order is not None:
             answer = f"Bought {format_qty(order['quantity'])} {ticker} (MOCK)"
             telegram.send_text(
                 chat_id, f"Bought {format_qty(order['quantity'])} {ticker} at ${order['fillPrice']:.2f} (MOCK)."

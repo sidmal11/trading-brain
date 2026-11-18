@@ -242,3 +242,29 @@ def test_commands_still_work_with_an_open_prompt(tg):
     _tap_data(tg, "ba:a1")
     r = _say(tg, "/stop")
     assert r.json().get("unsubscribed") == ADMIN
+
+
+# ── Decisions are final (review findings) ─────────────────────────────────────
+
+def test_leftover_confirm_cannot_buy_a_rejected_request(tg):
+    _tap_data(tg, "ba:a1")
+    _say(tg, "$10")
+    tg.tap("reject")
+    _tap_data(tg, "bc:a1:d10", message_id=8)
+    assert _answers(tg.http)[-1] == "Already rejected."
+    assert tg.client.get("/api/v1/orders").json() == [] and tg.status() == "REJECTED"
+
+
+def test_reject_after_a_buy_is_refused(tg):
+    _tap_data(tg, "bq:a1:0.5")
+    tg.tap("reject")
+    assert _answers(tg.http)[-1] == "Already bought. Close the position instead."
+    assert tg.status() == "APPROVED"
+
+
+def test_repeated_confirm_does_not_report_a_second_buy(tg):
+    _tap_data(tg, "bc:a1:s0.5", message_id=8)
+    _tap_data(tg, "bc:a1:s0.5", message_id=8)
+    assert sum(t.startswith("Bought") for t in tg.http.texts()) == 1
+    assert _answers(tg.http)[-1] == "Already bought 0.5 AAPL (MOCK)"
+    assert len(tg.client.get("/api/v1/orders").json()) == 1
