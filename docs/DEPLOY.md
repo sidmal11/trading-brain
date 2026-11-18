@@ -66,11 +66,11 @@ Use your own domain, or a free subdomain from DuckDNS. Either way, create an **A
 9. **Register the Telegram webhook** against the fixed HTTPS address (use the secret from `.env`):
    ```bash
    curl "https://api.telegram.org/bot<TOKEN>/setWebhook" \
-     -d "url=https://your.domain.example/api/telegram/webhook" \
+     -d "url=https://your.domain.example/api/v1/telegram/webhook" \
      -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>" \
      -d 'allowed_updates=["message","callback_query"]'
    ```
-10. **Check it:** `curl https://your.domain.example/api/auth/me` should return `{"detail":"Not signed in."}` with status 401. Only `/api/*` reaches the API; `/health` is served by the dashboard.
+10. **Check it:** `curl https://your.domain.example/api/v1/auth/me` should return `{"detail":"Not signed in."}` with status 401. Only `/api/*` reaches the API; `/health` is served by the dashboard.
 
 ## Backups
 

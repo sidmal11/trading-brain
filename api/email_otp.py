@@ -1,12 +1,12 @@
 """Email one-time-code login with a session cookie. Used when AUTH_MODE=email_otp.
 
 Flow:
-1. POST /api/auth/otp/request {email}: if the address is on ALLOWED_EMAILS, a
+1. POST /api/v1/auth/otp/request {email}: if the address is on ALLOWED_EMAILS, a
    6-digit code is emailed. The response is identical either way, so the API
    does not reveal which addresses are allowed.
-2. POST /api/auth/otp/verify {email, code}: on success, sets an HttpOnly session
+2. POST /api/v1/auth/otp/verify {email, code}: on success, sets an HttpOnly session
    cookie that the dashboard sends on every request.
-3. POST /api/auth/logout: ends the session.
+3. POST /api/v1/auth/logout: ends the session.
 
 Stored data holds no plain secrets: codes and session tokens are kept as HMAC or
 SHA-256 hashes. Codes expire after 10 minutes and lock after 5 wrong attempts.

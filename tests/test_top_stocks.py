@@ -49,7 +49,7 @@ def test_route_returns_every_group(monkeypatch, fake_quotes, tmp_path):
     monkeypatch.setattr(api_main, "_subscriber_store", None)
     client = TestClient(api_main.create_app())
 
-    body = client.get("/api/top-stocks").json()
+    body = client.get("/api/v1/top-stocks").json()
     assert [group["name"] for group in body] == [name for name, _ in top_stocks.TOP_STOCK_GROUPS]
 
 

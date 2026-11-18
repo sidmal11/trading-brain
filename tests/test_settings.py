@@ -44,15 +44,15 @@ def app_env(monkeypatch, tmp_path):
 # ── API ───────────────────────────────────────────────────────────────────────
 
 def test_defaults_are_served_before_anything_is_saved(app_env):
-    body = app_env.get("/api/settings").json()
+    body = app_env.get("/api/v1/settings").json()
     assert body["pollIntervalMinutes"] == 5
     assert body["persistent"] is True
     assert body["markets"] == ["us_stocks"]
 
 
 def test_put_then_get_returns_the_saved_values(app_env):
-    assert app_env.put("/api/settings", json=GOOD).status_code == 200
-    body = app_env.get("/api/settings").json()
+    assert app_env.put("/api/v1/settings", json=GOOD).status_code == 200
+    body = app_env.get("/api/v1/settings").json()
     assert body["pollIntervalMinutes"] == 10
     assert body["volumeThreshold"] == 2.5
 
@@ -66,28 +66,28 @@ def test_put_then_get_returns_the_saved_values(app_env):
     ("maxCandidatesPerRun", 21),
 ])
 def test_out_of_range_values_are_refused(app_env, field, bad):
-    r = app_env.put("/api/settings", json={**GOOD, field: bad})
+    r = app_env.put("/api/v1/settings", json={**GOOD, field: bad})
     assert r.status_code == 422
 
 
 def test_unknown_market_is_refused(app_env):
-    r = app_env.put("/api/settings", json={**GOOD, "markets": ["crypto"]})
+    r = app_env.put("/api/v1/settings", json={**GOOD, "markets": ["crypto"]})
     assert r.status_code == 422
 
 
 def test_empty_market_list_is_refused(app_env):
-    r = app_env.put("/api/settings", json={**GOOD, "markets": []})
+    r = app_env.put("/api/v1/settings", json={**GOOD, "markets": []})
     assert r.status_code == 422
 
 
 def test_duplicate_markets_are_refused(app_env):
-    r = app_env.put("/api/settings", json={**GOOD, "markets": ["us_stocks", "us_stocks"]})
+    r = app_env.put("/api/v1/settings", json={**GOOD, "markets": ["us_stocks", "us_stocks"]})
     assert r.status_code == 422
 
 
 def test_put_is_refused_on_dynamodb_backend(app_env, monkeypatch):
     monkeypatch.setattr(Config, "STORAGE_BACKEND", "dynamodb")
-    r = app_env.put("/api/settings", json=GOOD)
+    r = app_env.put("/api/v1/settings", json=GOOD)
     assert r.status_code == 503
 
 
@@ -122,7 +122,7 @@ def test_old_stored_settings_get_trading_defaults(tmp_path):
     ("maxOrdersPerDay", 21),
 ])
 def test_put_settings_rejects_out_of_range_trading_values(app_env, field, bad):
-    assert app_env.put("/api/settings", json={**GOOD, field: bad}).status_code == 422
+    assert app_env.put("/api/v1/settings", json={**GOOD, field: bad}).status_code == 422
 
 
 def test_chase_and_risk_defaults():
@@ -133,13 +133,13 @@ def test_chase_and_risk_defaults():
 @pytest.mark.parametrize("field, bad", [
     ("maxChasePct", 0.4), ("maxChasePct", 21), ("riskPerTrade", 0), ("riskPerTrade", 5001)])
 def test_put_settings_rejects_out_of_range_chase_and_risk(app_env, field, bad):
-    assert app_env.put("/api/settings", json={**GOOD, field: bad}).status_code == 422
+    assert app_env.put("/api/v1/settings", json={**GOOD, field: bad}).status_code == 422
 
 
 def test_put_settings_round_trips_trading_values(app_env):
     new = {**GOOD, "tradingEnabled": True, "dollarsPerTrade": 750, "maxOrdersPerDay": 5}
-    assert app_env.put("/api/settings", json=new).status_code == 200
-    body = app_env.get("/api/settings").json()
+    assert app_env.put("/api/v1/settings", json=new).status_code == 200
+    body = app_env.get("/api/v1/settings").json()
     assert (body["tradingEnabled"], body["dollarsPerTrade"], body["maxOrdersPerDay"]) == (True, 750, 5)
 
 
@@ -229,7 +229,7 @@ def test_defaults_match_config():
 def test_browser_preflight_allows_put_for_settings(app_env):
     # Regression: PUT was missing from CORS, so the dashboard's save failed with "Failed to fetch".
     r = app_env.options(
-        "/api/settings",
+        "/api/v1/settings",
         headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "PUT"},
     )
     assert "PUT" in r.headers.get("access-control-allow-methods", "")

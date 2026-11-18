@@ -51,7 +51,7 @@ def tg(monkeypatch, tmp_path):
     env.http = http
 
     def tap(decision="approve", alert_id="a1", ticker="AAPL"):
-        return env.client.post("/api/telegram/webhook", headers=HEADERS, json={"callback_query": {
+        return env.client.post("/api/v1/telegram/webhook", headers=HEADERS, json={"callback_query": {
             "id": "cb", "data": f"{decision}:{alert_id}:{ticker}", "from": {"id": int(ADMIN)},
             "message": {"message_id": 7, "chat": {"id": int(ADMIN)}},
         }})
@@ -69,7 +69,7 @@ def test_tap_approve_buys_and_replies(tg):
     assert "Bought 2.741228 AAPL at $182.40 (MOCK)." in tg.http.texts()  # the suggested quantity
     assert _answers(tg.http) == ["Bought 2.741228 AAPL (MOCK)"]
     assert "editMessageReplyMarkup" in tg.http.methods()
-    orders = tg.client.get("/api/orders").json()
+    orders = tg.client.get("/api/v1/orders").json()
     assert [o["status"] for o in orders] == ["FILLED"]
     assert tg.status() == "APPROVED"
 
@@ -81,14 +81,14 @@ def test_redelivered_tap_after_a_fill_below_the_stop_says_nothing_about_not_buyi
     tg.price = 94.0
     tg.tap(alert_id="m1", ticker="MSFT")
     assert not any("not bought" in t for t in tg.http.texts())
-    assert [o["status"] for o in tg.client.get("/api/orders").json()] == ["FILLED"]
+    assert [o["status"] for o in tg.client.get("/api/v1/orders").json()] == ["FILLED"]
     assert tg.status("m1") == "APPROVED"
 
 
 def test_tap_then_dashboard_approve_places_one_order(tg):
     tg.tap()
     r = tg.approve()
-    orders = tg.client.get("/api/orders").json()
+    orders = tg.client.get("/api/v1/orders").json()
     assert r.status_code == 200 and len(orders) == 1
     assert r.json()["order"]["id"] == orders[0]["id"] and orders[0]["status"] == "FILLED"
 
@@ -105,7 +105,7 @@ def test_refused_tap_replies_with_reason_and_keeps_buttons(tg):
 def test_tap_with_trading_off_is_unchanged(tg):
     tg.set(tradingEnabled=False)
     assert tg.tap().status_code == 200
-    assert tg.client.get("/api/orders").json() == []
+    assert tg.client.get("/api/v1/orders").json() == []
     assert not any("Bought" in t for t in tg.http.texts() + _answers(tg.http))
     assert _answers(tg.http) == ["AAPL: Approved"]
     assert tg.status() == "APPROVED"
@@ -114,7 +114,7 @@ def test_tap_with_trading_off_is_unchanged(tg):
 def test_tap_reject_is_unchanged(tg):
     tg.tap("reject")
     assert tg.status() == "REJECTED"
-    assert tg.client.get("/api/orders").json() == []
+    assert tg.client.get("/api/v1/orders").json() == []
     assert _answers(tg.http) == ["AAPL: Rejected"]
 
 
@@ -142,14 +142,14 @@ def test_tap_approve_unexpected_error_is_answered_not_redelivered(tg, monkeypatc
 # ── Amounts (phase 1 task 4) ──────────────────────────────────────────────────
 
 def _tap_data(tg, data, message_id=7):
-    return tg.client.post("/api/telegram/webhook", headers=HEADERS, json={"callback_query": {
+    return tg.client.post("/api/v1/telegram/webhook", headers=HEADERS, json={"callback_query": {
         "id": "cb", "data": data, "from": {"id": int(ADMIN)},
         "message": {"message_id": message_id, "chat": {"id": int(ADMIN)}},
     }})
 
 
 def _say(tg, text, chat_id=ADMIN):
-    return tg.client.post("/api/telegram/webhook", headers=HEADERS, json={"message": {
+    return tg.client.post("/api/v1/telegram/webhook", headers=HEADERS, json={"message": {
         "chat": {"id": int(chat_id), "type": "private"}, "from": {"id": int(chat_id)}, "text": text}})
 
 
@@ -160,13 +160,13 @@ def _keyboards(http):
 def test_preset_shares_button_buys_that_quantity(tg):
     _tap_data(tg, "bq:a1:0.5")
     assert "Bought 0.5 AAPL at $182.40 (MOCK)." in tg.http.texts()
-    assert [o["quantity"] for o in tg.client.get("/api/orders").json()] == [0.5]
+    assert [o["quantity"] for o in tg.client.get("/api/v1/orders").json()] == [0.5]
     assert tg.status() == "APPROVED"
 
 
 def test_preset_dollars_button_buys_that_amount(tg):
     _tap_data(tg, "bd:a1:10")
-    assert [o["quantity"] for o in tg.client.get("/api/orders").json()] == [0.054824]  # 10 / 182.4 rounded down
+    assert [o["quantity"] for o in tg.client.get("/api/v1/orders").json()] == [0.054824]  # 10 / 182.4 rounded down
 
 
 def test_other_amount_asks_then_confirms_then_buys(tg):
@@ -176,9 +176,9 @@ def test_other_amount_asks_then_confirms_then_buys(tg):
     assert tg.http.texts()[-1] == "Buy 0.054824 AAPL, about $10.00 (MOCK)?"
     buttons = [b["callback_data"] for row in _keyboards(tg.http)[-1]["inline_keyboard"] for b in row]
     assert buttons == ["bc:a1:d10", "bx:a1"]
-    assert tg.client.get("/api/orders").json() == []  # nothing bought before Confirm
+    assert tg.client.get("/api/v1/orders").json() == []  # nothing bought before Confirm
     _tap_data(tg, "bc:a1:d10", message_id=8)
-    assert [o["quantity"] for o in tg.client.get("/api/orders").json()] == [0.054824]
+    assert [o["quantity"] for o in tg.client.get("/api/v1/orders").json()] == [0.054824]
 
 
 def test_typed_shares_and_trailing_dollar_sign_are_read(tg):
@@ -211,7 +211,7 @@ def test_cancel_clears_without_buying(tg):
     _say(tg, "$10")
     _tap_data(tg, "bx:a1", message_id=8)
     assert _answers(tg.http)[-1] == "Cancelled."
-    assert tg.client.get("/api/orders").json() == [] and tg.status() == "PENDING"
+    assert tg.client.get("/api/v1/orders").json() == [] and tg.status() == "PENDING"
 
 
 def test_text_with_no_prompt_or_from_a_subscriber_does_nothing(tg):
@@ -235,7 +235,7 @@ def test_confirm_on_an_expired_request_is_refused(tg):
     tg.alerts.expire_alert("a1", "Price fell to the stop $170.00.")
     _tap_data(tg, "bc:a1:s1")
     assert _answers(tg.http) == ["Request expired: Price fell to the stop $170.00."]
-    assert tg.client.get("/api/orders").json() == []
+    assert tg.client.get("/api/v1/orders").json() == []
 
 
 def test_commands_still_work_with_an_open_prompt(tg):

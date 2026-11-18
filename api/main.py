@@ -6,15 +6,15 @@ names and the status vocabulary here are taken from
 `frontend/src/types/market.ts` and must stay in step with it.
 
 Routes:
-    GET  /api/signals                  StockSignal[]
-    GET  /api/futures                  FuturesContract[]
-    GET  /api/market-overview          MarketOverview
-    GET  /api/alerts                   raw alert rows (normalised client-side)
-    POST /api/alerts/{alertId}/review  record a decision; APPROVED buys in the mock account
-    GET  /api/orders                   mock orders, newest first
-    GET  /api/positions                mock cash and open positions
-    POST /api/positions/{ticker}/close sell a whole mock position
-    POST /api/telegram/webhook         Telegram button taps
+    GET  /api/v1/signals                  StockSignal[]
+    GET  /api/v1/futures                  FuturesContract[]
+    GET  /api/v1/market-overview          MarketOverview
+    GET  /api/v1/alerts                   raw alert rows (normalised client-side)
+    POST /api/v1/alerts/{alertId}/review  record a decision; APPROVED buys in the mock account
+    GET  /api/v1/orders                   mock orders, newest first
+    GET  /api/v1/positions                mock cash and open positions
+    POST /api/v1/positions/{ticker}/close sell a whole mock position
+    POST /api/v1/telegram/webhook         Telegram button taps
     GET  /health                       unauthenticated liveness probe
 """
 
@@ -253,7 +253,7 @@ def _safe(worker):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-router = APIRouter(prefix="/api", dependencies=[Depends(require_user)])
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_user)])
 
 
 @router.get("/settings")
@@ -446,7 +446,7 @@ class OtpVerify(BaseModel):
     code: str
 
 
-auth_router = APIRouter(prefix="/api/auth")
+auth_router = APIRouter(prefix="/api/v1/auth")
 
 
 @auth_router.post("/otp/request")
@@ -501,7 +501,7 @@ def logout(request: Request, response: Response):
 # Outside `router` because Telegram cannot present a Cognito token. It is
 # authenticated instead by the shared secret configured on setWebhook.
 
-webhook_router = APIRouter(prefix="/api")
+webhook_router = APIRouter(prefix="/api/v1")
 
 
 @webhook_router.post("/telegram/webhook")

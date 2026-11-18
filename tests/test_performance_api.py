@@ -1,4 +1,4 @@
-"""GET /api/performance and the cached Yahoo daily bars. No network."""
+"""GET /api/v1/performance and the cached Yahoo daily bars. No network."""
 
 import sys
 from pathlib import Path
@@ -42,7 +42,7 @@ def env(monkeypatch, tmp_path):
 
 
 def test_performance_route_shape(env):
-    body = env.get("/api/performance").json()
+    body = env.get("/api/v1/performance").json()
     assert set(body) == {"broker", "totals", "trades", "recommendations"}
     assert body["broker"] == "mock"
     t = body["trades"][0]
@@ -55,7 +55,7 @@ def test_performance_route_shape(env):
 def test_performance_off_sqlite_has_no_trades_but_has_recommendations(env, monkeypatch):
     monkeypatch.setattr(Config, "STORAGE_BACKEND", "dynamodb")
     monkeypatch.setattr(api_main, "get_db", lambda: SqliteStore(Config.SQLITE_PATH))
-    body = env.get("/api/performance").json()
+    body = env.get("/api/v1/performance").json()
     assert body["trades"] == [] and body["totals"]["moneyIn"] == 0
     assert body["recommendations"]["items"][0]["ticker"] == "NVDA"
 
@@ -63,7 +63,7 @@ def test_performance_off_sqlite_has_no_trades_but_has_recommendations(env, monke
 def test_performance_with_yahoo_down_returns_nulls_not_500(env, monkeypatch):
     monkeypatch.setattr(performance, "daily_bars", lambda tickers, start: {})
     monkeypatch.setattr(trading, "price_of", lambda t: None)
-    r = env.get("/api/performance")
+    r = env.get("/api/v1/performance")
     assert r.status_code == 200
     t = r.json()["trades"][0]
     assert t["pnl"] is None and t["bestHigh"] is None
@@ -109,7 +109,7 @@ def test_price_now_comes_from_the_newest_bar_close(env, monkeypatch):
         raise AssertionError("price_of must not be called")
 
     monkeypatch.setattr(trading, "price_of", boom)
-    body = env.get("/api/performance").json()
+    body = env.get("/api/v1/performance").json()
     assert body["trades"][0]["exitPrice"] == 156.0
     assert body["recommendations"]["items"][0]["priceNow"] == 156.0
 
@@ -120,7 +120,7 @@ def test_route_never_calls_price_of(env, monkeypatch):
 
     monkeypatch.setattr(trading, "price_of", boom)
     monkeypatch.setattr(performance, "daily_bars", lambda tickers, start: {})
-    body = env.get("/api/performance").json()
+    body = env.get("/api/v1/performance").json()
     t = body["trades"][0]
     assert t["exitPrice"] is None and t["priceAsOf"] is None
     assert body["totals"]["currentValue"] is None and body["totals"]["unrealizedPnl"] is None
@@ -130,7 +130,7 @@ def test_route_reads_every_alert(env):
     store = SqliteStore(Config.SQLITE_PATH)
     for i in range(201):
         store.save_alert(f"x{i}", "NVDA", "m", "p", price=150.0, trading_date="2026-11-17")
-    assert len(env.get("/api/performance").json()["recommendations"]["items"]) == 202
+    assert len(env.get("/api/v1/performance").json()["recommendations"]["items"]) == 202
 
 
 def test_route_requests_only_scored_and_filled_tickers(env, monkeypatch):
@@ -140,7 +140,7 @@ def test_route_requests_only_scored_and_filled_tickers(env, monkeypatch):
     store.save_alert("old", "OLD", "m", "p")  # no price or date: not scored
     store.save_alert("nodate", "NOD", "m", "p", price=1.0)
     trading.get_trades_store().claim_buy("a9", "PND", 1, "2026-11-01")  # pending, never filled
-    env.get("/api/performance")
+    env.get("/api/v1/performance")
     assert asked == [(["NVDA"], "2026-11-17")]
 
 

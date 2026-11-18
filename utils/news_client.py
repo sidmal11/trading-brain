@@ -1,7 +1,7 @@
 """Latest AInvest news-wire headlines per ticker.
 
 Docs: https://docs.ainvest.com/reference/news/wires
-The dashboard polls /api/signals every 30s; the wire is only re-read once the
+The dashboard polls /api/v1/signals every 30s; the wire is only re-read once the
 cache is older than NEWS_REFRESH_SECONDS, so the free tier's per-minute limit
 is not spent on every poll.
 """

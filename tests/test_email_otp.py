@@ -57,33 +57,33 @@ def env(monkeypatch, tmp_path):
 
 
 def _login(env, email=ALLOWED):
-    env["client"].post("/api/auth/otp/request", json={"email": email})
-    return env["client"].post("/api/auth/otp/verify", json={"email": email, "code": env["outbox"].last_code()})
+    env["client"].post("/api/v1/auth/otp/request", json={"email": email})
+    return env["client"].post("/api/v1/auth/otp/verify", json={"email": email, "code": env["outbox"].last_code()})
 
 
 # ── Request ───────────────────────────────────────────────────────────────────
 
 def test_allowed_email_gets_a_code(env):
-    r = env["client"].post("/api/auth/otp/request", json={"email": ALLOWED})
+    r = env["client"].post("/api/v1/auth/otp/request", json={"email": ALLOWED})
     assert r.status_code == 200
     assert [to for to, _ in env["outbox"].sent] == [ALLOWED]
 
 
 def test_unknown_email_gets_the_same_answer_and_no_email(env):
-    r = env["client"].post("/api/auth/otp/request", json={"email": "stranger@example.com"})
+    r = env["client"].post("/api/v1/auth/otp/request", json={"email": "stranger@example.com"})
     assert r.status_code == 200
     assert r.json() == {"ok": True}
     assert env["outbox"].sent == []
 
 
 def test_second_request_within_cooldown_sends_nothing_new(env):
-    env["client"].post("/api/auth/otp/request", json={"email": ALLOWED})
-    env["client"].post("/api/auth/otp/request", json={"email": ALLOWED})
+    env["client"].post("/api/v1/auth/otp/request", json={"email": ALLOWED})
+    env["client"].post("/api/v1/auth/otp/request", json={"email": ALLOWED})
     assert len(env["outbox"].sent) == 1
 
 
 def test_code_is_not_stored_in_plain_text(env):
-    env["client"].post("/api/auth/otp/request", json={"email": ALLOWED})
+    env["client"].post("/api/v1/auth/otp/request", json={"email": ALLOWED})
     code = env["outbox"].last_code()
     assert code.encode() not in env["path"].read_bytes()
 
@@ -99,54 +99,54 @@ def test_correct_code_sets_a_secure_session_cookie(env):
 
 def test_session_cookie_unlocks_the_data_api(env):
     _login(env)
-    assert env["client"].get("/api/alerts").status_code == 200
+    assert env["client"].get("/api/v1/alerts").status_code == 200
 
 
 def test_no_cookie_means_no_data(env):
-    assert env["client"].get("/api/alerts").status_code == 401
+    assert env["client"].get("/api/v1/alerts").status_code == 401
 
 
 def test_wrong_code_is_refused(env):
-    env["client"].post("/api/auth/otp/request", json={"email": ALLOWED})
-    r = env["client"].post("/api/auth/otp/verify", json={"email": ALLOWED, "code": "000000"})
+    env["client"].post("/api/v1/auth/otp/request", json={"email": ALLOWED})
+    r = env["client"].post("/api/v1/auth/otp/verify", json={"email": ALLOWED, "code": "000000"})
     assert r.status_code == 401
 
 
 def test_code_locks_after_five_wrong_attempts(env):
-    env["client"].post("/api/auth/otp/request", json={"email": ALLOWED})
+    env["client"].post("/api/v1/auth/otp/request", json={"email": ALLOWED})
     right = env["outbox"].last_code()
     wrong = "000000" if right != "000000" else "111111"
     for _ in range(5):
-        env["client"].post("/api/auth/otp/verify", json={"email": ALLOWED, "code": wrong})
-    r = env["client"].post("/api/auth/otp/verify", json={"email": ALLOWED, "code": right})
+        env["client"].post("/api/v1/auth/otp/verify", json={"email": ALLOWED, "code": wrong})
+    r = env["client"].post("/api/v1/auth/otp/verify", json={"email": ALLOWED, "code": right})
     assert r.status_code == 401  # locked, even with the right code
 
 
 def test_code_expires_after_ten_minutes(env):
-    env["client"].post("/api/auth/otp/request", json={"email": ALLOWED})
+    env["client"].post("/api/v1/auth/otp/request", json={"email": ALLOWED})
     code = env["outbox"].last_code()
     env["clock"].now += 11 * 60
-    r = env["client"].post("/api/auth/otp/verify", json={"email": ALLOWED, "code": code})
+    r = env["client"].post("/api/v1/auth/otp/verify", json={"email": ALLOWED, "code": code})
     assert r.status_code == 401
 
 
 def test_a_code_works_once(env):
     _login(env)
     code = env["outbox"].last_code()
-    r = env["client"].post("/api/auth/otp/verify", json={"email": ALLOWED, "code": code})
+    r = env["client"].post("/api/v1/auth/otp/verify", json={"email": ALLOWED, "code": code})
     assert r.status_code == 401
 
 
 def test_session_expires_after_seven_days(env):
     _login(env)
     env["clock"].now += 8 * 24 * 3600
-    assert env["client"].get("/api/alerts").status_code == 401
+    assert env["client"].get("/api/v1/alerts").status_code == 401
 
 
 def test_logout_ends_the_session(env):
     _login(env)
-    env["client"].post("/api/auth/logout")
-    assert env["client"].get("/api/alerts").status_code == 401
+    env["client"].post("/api/v1/auth/logout")
+    assert env["client"].get("/api/v1/alerts").status_code == 401
 
 
 # ── Startup safety ────────────────────────────────────────────────────────────
@@ -165,11 +165,11 @@ def test_app_refuses_to_start_with_no_allowed_emails(env, monkeypatch):
 
 def test_auth_routes_are_404_when_email_login_is_off(env, monkeypatch):
     monkeypatch.setattr(Config, "AUTH_MODE", "")
-    r = env["client"].post("/api/auth/otp/request", json={"email": ALLOWED})
+    r = env["client"].post("/api/v1/auth/otp/request", json={"email": ALLOWED})
     assert r.status_code == 404
 
 
 def test_me_reports_the_signed_in_email(env):
-    assert env["client"].get("/api/auth/me").status_code == 401
+    assert env["client"].get("/api/v1/auth/me").status_code == 401
     _login(env)
-    assert env["client"].get("/api/auth/me").json() == {"email": ALLOWED}
+    assert env["client"].get("/api/v1/auth/me").json() == {"email": ALLOWED}

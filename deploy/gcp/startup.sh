@@ -96,7 +96,7 @@ TOKEN="$(envval TELEGRAM_BOT_TOKEN)"
 SECRET_TOKEN="$(envval TELEGRAM_WEBHOOK_SECRET)"
 DOMAIN_NAME="$(envval DOMAIN)"
 curl -s "https://api.telegram.org/bot${TOKEN}/setWebhook" \
-  -d "url=https://${DOMAIN_NAME}/api/telegram/webhook" \
+  -d "url=https://${DOMAIN_NAME}/api/v1/telegram/webhook" \
   -d "secret_token=${SECRET_TOKEN}" \
   -d 'allowed_updates=["message","callback_query"]' || echo "webhook registration failed; see log"
 echo

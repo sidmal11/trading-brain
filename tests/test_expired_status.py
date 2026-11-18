@@ -96,7 +96,7 @@ def env(monkeypatch, tmp_path):
 
 
 def test_review_route_rejects_expired_as_a_decision(env):
-    r = env["client"].post("/api/alerts/a1/review", json={"decision": "EXPIRED"})
+    r = env["client"].post("/api/v1/alerts/a1/review", json={"decision": "EXPIRED"})
     assert r.status_code == 422
 
 
@@ -107,7 +107,7 @@ def test_approving_an_expired_alert_is_refused(env, monkeypatch, trading_on):
             "pollIntervalMinutes": 5, "volumeThreshold": 3.0, "maxCandidatesPerRun": 5,
             "telegramAlertsEnabled": True, "markets": ["us_stocks"],
             "tradingEnabled": False, "dollarsPerTrade": 500, "maxOrdersPerDay": 3})
-    r = env["client"].post("/api/alerts/a1/review", json={"decision": "APPROVED"})
+    r = env["client"].post("/api/v1/alerts/a1/review", json={"decision": "APPROVED"})
     assert r.status_code == 409
     assert r.json()["detail"] == "Request expired: Cleared at upgrade."
     assert env["trades"].list_orders() == []

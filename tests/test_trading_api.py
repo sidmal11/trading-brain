@@ -61,7 +61,7 @@ class Env:
         self.settings.put({**SETTINGS, **values})
 
     def approve(self, alert_id="a1", **amount):
-        return self.client.post(f"/api/alerts/{alert_id}/review", json={"decision": "APPROVED", **amount})
+        return self.client.post(f"/api/v1/alerts/{alert_id}/review", json={"decision": "APPROVED", **amount})
 
     def status(self, alert_id="a1"):
         return self.alerts.get_alert(alert_id)["status"]
@@ -90,7 +90,7 @@ def test_approving_a_macd_alert_carries_its_stop_and_target_to_positions(env):
                           signal_type="MACD_CROSSOVER", stop=170.0, target=200.0)
     order = env.approve("m1").json()["order"]
     assert (order["stopPrice"], order["targetPrice"]) == (170.0, 200.0)
-    [position] = env.client.get("/api/positions").json()["positions"]
+    [position] = env.client.get("/api/v1/positions").json()["positions"]
     assert (position["stopPrice"], position["targetPrice"]) == (170.0, 200.0)
 
 
@@ -98,7 +98,7 @@ def test_second_approval_places_no_second_order(env):
     first, second = env.approve(), env.approve()
     assert first.status_code == second.status_code == 200
     assert first.json()["order"]["id"] == second.json()["order"]["id"]
-    orders = env.client.get("/api/orders").json()
+    orders = env.client.get("/api/v1/orders").json()
     assert [o["status"] for o in orders] == ["FILLED"]
 
 
@@ -110,9 +110,9 @@ def test_second_alert_for_a_held_ticker_is_refused_until_close(env):
     assert env.status("a2") == "PENDING"
     mine = [o for o in env.trades.list_orders() if o["alertId"] == "a2"]
     assert [(o["status"], o["reason"]) for o in mine] == [("FAILED", "Already holding AAPL.")]
-    [position] = env.client.get("/api/positions").json()["positions"]
+    [position] = env.client.get("/api/v1/positions").json()["positions"]
     assert position["quantity"] == SUGGESTED  # no second buy
-    assert env.client.post("/api/positions/AAPL/close").status_code == 200
+    assert env.client.post("/api/v1/positions/AAPL/close").status_code == 200
     r = env.approve("a2")
     assert r.status_code == 200 and r.json()["order"]["status"] == "FILLED"
 
@@ -141,7 +141,7 @@ def test_trading_off_only_records_the_decision(env):
     r = env.approve()
     assert r.status_code == 200 and r.json()["order"] is None
     assert env.status() == "APPROVED"
-    assert env.client.get("/api/orders").json() == []
+    assert env.client.get("/api/v1/orders").json() == []
 
 
 def _limit(env):
@@ -181,7 +181,7 @@ def test_refused_then_retried_buys(env):
     env.price = 182.4
     r = env.approve()
     assert r.status_code == 200 and r.json()["order"]["status"] == "FILLED"
-    assert [o["status"] for o in env.client.get("/api/orders").json()] == ["FILLED", "FAILED"]
+    assert [o["status"] for o in env.client.get("/api/v1/orders").json()] == ["FILLED", "FAILED"]
 
 
 def test_broker_exception_marks_the_order_failed(env, monkeypatch):
@@ -196,7 +196,7 @@ def test_broker_exception_marks_the_order_failed(env, monkeypatch):
 
 def test_positions_and_cash_after_a_buy(env):
     env.approve()
-    body = env.client.get("/api/positions").json()
+    body = env.client.get("/api/v1/positions").json()
     assert body["broker"] == "mock" and body["startingCash"] == 10000.0
     assert body["cash"] == round(10000 - SUGGESTED * 182.4, 2)
     [position] = body["positions"]
@@ -208,7 +208,7 @@ def test_positions_and_cash_after_a_buy(env):
 def test_positions_with_quote_down_have_null_prices(env):
     env.approve()
     env.price = None
-    r = env.client.get("/api/positions")
+    r = env.client.get("/api/v1/positions")
     assert r.status_code == 200
     [position] = r.json()["positions"]
     for field in ("currentPrice", "marketValue", "unrealizedPnl", "unrealizedPnlPercent"):
@@ -217,29 +217,29 @@ def test_positions_with_quote_down_have_null_prices(env):
 
 def test_close_sells_the_whole_position(env):
     env.approve()
-    r = env.client.post("/api/positions/AAPL/close")
+    r = env.client.post("/api/v1/positions/AAPL/close")
     assert r.status_code == 200
     order = r.json()
     assert (order["side"], order["quantity"], order["status"]) == ("SELL", SUGGESTED, "FILLED")
-    assert env.client.get("/api/positions").json()["positions"] == []
+    assert env.client.get("/api/v1/positions").json()["positions"] == []
 
 
 def test_close_without_position_is_404(env):
-    assert env.client.post("/api/positions/AAPL/close").status_code == 404
+    assert env.client.post("/api/v1/positions/AAPL/close").status_code == 404
 
 
 def test_close_after_close_is_404(env):
     env.approve()
-    assert env.client.post("/api/positions/AAPL/close").status_code == 200
-    assert env.client.post("/api/positions/AAPL/close").status_code == 404
-    assert env.client.get("/api/positions").json()["cash"] == 10000.0
+    assert env.client.post("/api/v1/positions/AAPL/close").status_code == 200
+    assert env.client.post("/api/v1/positions/AAPL/close").status_code == 404
+    assert env.client.get("/api/v1/positions").json()["cash"] == 10000.0
     assert [o["side"] for o in env.trades.list_orders()] == ["SELL", "BUY"]
 
 
 def test_close_with_quote_down_is_409_and_books_nothing(env):
     env.approve()
     env.price = None
-    r = env.client.post("/api/positions/AAPL/close")
+    r = env.client.post("/api/v1/positions/AAPL/close")
     assert r.status_code == 409 and r.json()["detail"] == "Price unavailable."
     assert [o["side"] for o in env.trades.list_orders()] == ["BUY"]
 
@@ -260,18 +260,18 @@ def test_close_broker_exception_marks_the_sell_failed(env, monkeypatch):
 def test_close_works_when_market_closed(env):
     env.approve()
     env.open = None
-    r = env.client.post("/api/positions/AAPL/close")
+    r = env.client.post("/api/v1/positions/AAPL/close")
     assert r.status_code == 200 and r.json()["status"] == "FILLED"
 
 
 def test_close_works_with_trading_off(env):
     env.approve()
     env.set(tradingEnabled=False)
-    assert env.client.post("/api/positions/AAPL/close").status_code == 200
+    assert env.client.post("/api/v1/positions/AAPL/close").status_code == 200
 
 
 def test_reject_is_unchanged(env):
-    r = env.client.post("/api/alerts/a1/review", json={"decision": "REJECTED"})
+    r = env.client.post("/api/v1/alerts/a1/review", json={"decision": "REJECTED"})
     assert r.status_code == 200 and r.json()["order"] is None
     assert env.status() == "REJECTED"
     assert env.trades.list_orders() == []
@@ -282,7 +282,7 @@ def test_pnl_uses_the_exact_cost_basis_not_the_rounded_average(env):
         order, _ = env.trades.claim_buy(alert_id, "XYZ", 50, TODAY)
         env.trades.fill(order["id"], price)
     env.price = 5000.5 / 150  # unchanged: the exact average cost
-    p = env.client.get("/api/positions").json()["positions"][0]
+    p = env.client.get("/api/v1/positions").json()["positions"][0]
     assert p["averageCost"] == 33.34
     assert p["unrealizedPnl"] == 0.0 and p["unrealizedPnlPercent"] == 0.0
     assert set(p) == {"ticker", "quantity", "averageCost", "currentPrice", "marketValue",
@@ -301,18 +301,18 @@ def off_sqlite(env, monkeypatch):
 
 
 def test_orders_empty_off_sqlite(off_sqlite):
-    r = off_sqlite.client.get("/api/orders")
+    r = off_sqlite.client.get("/api/v1/orders")
     assert r.status_code == 200 and r.json() == []
 
 
 def test_positions_empty_off_sqlite(off_sqlite):
-    r = off_sqlite.client.get("/api/positions")
+    r = off_sqlite.client.get("/api/v1/positions")
     assert r.status_code == 200
     assert r.json() == {"broker": "mock", "startingCash": 10000.0, "cash": 10000.0, "positions": []}
 
 
 def test_close_is_404_off_sqlite(off_sqlite):
-    assert off_sqlite.client.post("/api/positions/AAPL/close").status_code == 404
+    assert off_sqlite.client.post("/api/v1/positions/AAPL/close").status_code == 404
 
 
 # -- Amounts, any hour, validity re-check --------------------------------------
@@ -321,7 +321,7 @@ def test_dollars_buy_a_fraction_of_a_share(env):
     env.price = 153.7
     order = env.approve(dollars=10).json()["order"]
     assert (order["quantity"], order["status"]) == (0.065061, "FILLED")
-    body = env.client.get("/api/positions").json()
+    body = env.client.get("/api/v1/positions").json()
     assert body["positions"][0]["quantity"] == 0.065061
     assert body["cash"] == round(10000 - 0.065061 * 153.7, 2)
 
@@ -341,7 +341,7 @@ def test_bad_amounts_are_422_and_book_nothing(env, amount):
 
 
 def test_non_finite_amount_is_422(env):
-    r = env.client.post("/api/alerts/a1/review", content='{"decision": "APPROVED", "dollars": Infinity}',
+    r = env.client.post("/api/v1/alerts/a1/review", content='{"decision": "APPROVED", "dollars": Infinity}',
                         headers={"Content-Type": "application/json"})
     assert r.status_code == 422
 

@@ -28,7 +28,7 @@ ADMIN = "1000"
 SUB = "2000"
 SUB_2 = "3000"
 SECRET = "test-secret"
-WEBHOOK = "/api/telegram/webhook"
+WEBHOOK = "/api/v1/telegram/webhook"
 HEADERS = {"X-Telegram-Bot-Api-Secret-Token": SECRET}
 
 
@@ -294,7 +294,7 @@ def _expired(world):
 def test_dashboard_decision_on_an_expired_alert_is_refused(world, decision):
     alert_id = _expired(world)
     before = len(world["http"].calls)
-    r = world["client"].post(f"/api/alerts/{alert_id}/review", json={"decision": decision})
+    r = world["client"].post(f"/api/v1/alerts/{alert_id}/review", json={"decision": decision})
     assert r.status_code == 409 and r.json()["detail"] == "Request expired: Cleared at upgrade."
     assert world["db"].get_alert(alert_id)["status"] == "EXPIRED"
     assert len(world["http"].calls) == before  # no Telegram edit
