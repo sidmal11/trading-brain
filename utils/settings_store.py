@@ -33,6 +33,8 @@ def defaults() -> dict:
         "tradingEnabled": False,
         "dollarsPerTrade": 500,
         "maxOrdersPerDay": 3,
+        "maxChasePct": 3,
+        "riskPerTrade": 50,
     }
 
 

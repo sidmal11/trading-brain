@@ -92,6 +92,8 @@ class SettingsIn(BaseModel):
     tradingEnabled: bool
     dollarsPerTrade: int = Field(ge=50, le=5000)
     maxOrdersPerDay: int = Field(ge=1, le=20)
+    maxChasePct: float = Field(ge=0.5, le=20)
+    riskPerTrade: float = Field(ge=1, le=5000)
 
     @field_validator("markets")
     @classmethod

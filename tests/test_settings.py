@@ -24,6 +24,8 @@ GOOD = {
     "tradingEnabled": False,
     "dollarsPerTrade": 500,
     "maxOrdersPerDay": 3,
+    "maxChasePct": 3,
+    "riskPerTrade": 50,
 }
 
 
@@ -120,6 +122,17 @@ def test_old_stored_settings_get_trading_defaults(tmp_path):
     ("maxOrdersPerDay", 21),
 ])
 def test_put_settings_rejects_out_of_range_trading_values(app_env, field, bad):
+    assert app_env.put("/api/settings", json={**GOOD, field: bad}).status_code == 422
+
+
+def test_chase_and_risk_defaults():
+    d = defaults()
+    assert (d["maxChasePct"], d["riskPerTrade"]) == (3, 50)
+
+
+@pytest.mark.parametrize("field, bad", [
+    ("maxChasePct", 0.4), ("maxChasePct", 21), ("riskPerTrade", 0), ("riskPerTrade", 5001)])
+def test_put_settings_rejects_out_of_range_chase_and_risk(app_env, field, bad):
     assert app_env.put("/api/settings", json={**GOOD, field: bad}).status_code == 422
 
 
