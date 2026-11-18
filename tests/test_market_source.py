@@ -136,9 +136,14 @@ class _FakeTicker:
 @pytest.mark.parametrize("session, info, expected", [
     (None, {"preMarketPrice": 151.0, "preMarketTime": 200, "postMarketPrice": 149.0, "postMarketTime": 100}, 151.0),
     (None, {"preMarketPrice": 151.0, "preMarketTime": 100, "postMarketPrice": 149.0, "postMarketTime": 200}, 149.0),
-    (None, {"postMarketPrice": 149.5}, 149.5),
+    (None, {"postMarketPrice": 149.5, "postMarketTime": 60}, 149.5),
     (None, {}, None),
     (0.5, {"preMarketPrice": 151.0, "preMarketTime": 200}, None),
+    # after the close Yahoo can still report this morning's pre-market: older than the close, so not used
+    (None, {"regularMarketTime": 150, "preMarketPrice": 151.0, "preMarketTime": 100}, None),
+    (None, {"regularMarketTime": 150, "preMarketPrice": 151.0, "preMarketTime": 100,
+            "postMarketPrice": 149.0, "postMarketTime": 160}, 149.0),
+    (None, {"regularMarketTime": 150, "postMarketPrice": 149.0}, None),  # no time: cannot be shown newer
 ])
 def test_quote_carries_the_newest_extended_price_only_when_closed(monkeypatch, session, info, expected):
     from api import market_source

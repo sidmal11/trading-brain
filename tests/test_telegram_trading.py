@@ -74,6 +74,17 @@ def test_tap_approve_buys_and_replies(tg):
     assert tg.status() == "APPROVED"
 
 
+def test_redelivered_tap_after_a_fill_below_the_stop_says_nothing_about_not_buying(tg):
+    tg.alerts.save_alert("m1", "MSFT", "MACD", "x", trading_date="2026-11-17", stop=95.0, price=100.0)
+    tg.price = 100.0
+    tg.tap(alert_id="m1", ticker="MSFT")
+    tg.price = 94.0
+    tg.tap(alert_id="m1", ticker="MSFT")
+    assert not any("not bought" in t for t in tg.http.texts())
+    assert [o["status"] for o in tg.client.get("/api/orders").json()] == ["FILLED"]
+    assert tg.status("m1") == "APPROVED"
+
+
 def test_tap_then_dashboard_approve_places_one_order(tg):
     tg.tap()
     r = tg.approve()

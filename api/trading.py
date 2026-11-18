@@ -68,7 +68,7 @@ def _buy_refusal(alert, today, store, settings, price, quantity):
         return f"Daily order limit reached ({settings['maxOrdersPerDay']})."
     if not price or price <= 0:
         return "Price unavailable."
-    if quantity * price < 1:
+    if round(quantity * price, 2) < 1:  # cents: $1 at an awkward price must not fall a hair short
         return "Minimum order is $1."
     if store.cash(Config.MOCK_STARTING_CASH) < quantity * price:
         return "Not enough mock cash."
@@ -88,9 +88,13 @@ def execute_approval(alert, db, shares=None, dollars=None):
     if alert.get("status") == "EXPIRED":  # before the trading switch: never status-flip an expired alert
         raise TradeRefused(f"Request expired: {alert.get('expiredReason') or 'No longer valid.'}")
     settings = effective_settings()
-    if settings_store() is None or not settings["tradingEnabled"]:
-        _set_approved(db, alert_id)
-        return None
+    store = get_trades_store() if settings_store() is not None else None  # the trades file lives only on SQLite
+    existing = store.live_buy(alert_id) if store else None
+    if existing:
+        # Already bought (or being bought): a repeat approval answers with that order, whatever the price did since.
+        if existing["status"] == "FILLED":
+            _set_approved(db, alert_id)
+        return existing
 
     price = price_of(ticker)  # before the claim: no slow work between claim and fill/fail
     stop = _num(alert.get("stopPrice"))
@@ -99,10 +103,13 @@ def execute_approval(alert, db, shares=None, dollars=None):
     if reason:
         db.expire_alert(alert_id, reason)
         raise TradeRefused(f"Request expired: {reason}")
+    if store is None or not settings["tradingEnabled"]:
+        _set_approved(db, alert_id)
+        return None
+
     priced = price is not None and price > 0  # never size against a missing or zero price
     quantity = quantity_for(price, shares, dollars, suggest_quantity(price, stop, settings)) if priced else 0
     today = trading_date()
-    store = get_trades_store()
     order, created = store.claim_buy(alert_id, ticker, quantity, today, strategy=alert.get("strategy"),
                                      stop_price=stop, target_price=_num(alert.get("targetPrice")))
     if not created:

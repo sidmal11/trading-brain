@@ -268,11 +268,16 @@ def _fetch_quote(symbol):
 
 
 def _extended_price(info):
-    """The newer of Yahoo's pre- and post-market prices while the regular session is closed, else None."""
+    """The newer of Yahoo's pre- and post-market prices while the regular session is closed, else None.
+
+    Only a price stamped after the regular close counts: after 16:00 Yahoo can still report this morning's pre-market.
+    """
     if session_fraction() is not None:
         return None
+    close = info.get("regularMarketTime") or 0
     quotes = [(info.get(f"{side}MarketTime") or 0, info[f"{side}MarketPrice"])
               for side in ("pre", "post") if info.get(f"{side}MarketPrice")]
+    quotes = [q for q in quotes if q[0] > close]
     return round(float(max(quotes)[1]), 2) if quotes else None
 
 

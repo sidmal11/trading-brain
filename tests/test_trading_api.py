@@ -117,6 +117,25 @@ def test_second_alert_for_a_held_ticker_is_refused_until_close(env):
     assert r.status_code == 200 and r.json()["order"]["status"] == "FILLED"
 
 
+def test_trading_off_still_expires_an_invalid_request(env):
+    env.set(tradingEnabled=False)
+    env.alerts.save_alert("m1", "MSFT", "MACD", "x", trading_date=TODAY, stop=95.0, price=100.0)
+    env.price = 94.0
+    r = env.approve("m1")
+    assert r.status_code == 409 and r.json()["detail"] == "Request expired: Price fell to the stop $95.00."
+    assert env.status("m1") == "EXPIRED"
+
+
+def test_repeat_approval_after_a_fill_returns_the_order_even_below_the_stop(env):
+    env.alerts.save_alert("m1", "MSFT", "MACD", "x", trading_date=TODAY, stop=95.0, price=100.0)
+    env.price = 100.0
+    first = env.approve("m1").json()["order"]
+    env.price = 94.0
+    r = env.approve("m1")
+    assert r.status_code == 200 and r.json()["order"]["id"] == first["id"]
+    assert env.status("m1") == "APPROVED"
+
+
 def test_trading_off_only_records_the_decision(env):
     env.set(tradingEnabled=False)
     r = env.approve()
@@ -384,3 +403,9 @@ def test_price_of_uses_the_extended_price_when_closed(monkeypatch):
     monkeypatch.setattr(trading, "session_fraction", lambda: None)
     monkeypatch.setattr(trading.market_source, "quote", lambda t: {"price": 150.0, "extendedPrice": None})
     assert trading.price_of("AAPL") == 150.0
+
+
+def test_one_dollar_is_the_minimum_not_below_it(env):
+    env.price = 153.7  # 1 / 153.7 rounds down to 0.006506 shares, $0.99996 before cent rounding
+    order = env.approve(dollars=1).json()["order"]
+    assert (order["quantity"], order["status"]) == (0.006506, "FILLED")

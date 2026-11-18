@@ -72,6 +72,11 @@ class TradesStore:
                     return existing, False
                 # The conflicting buy was marked FAILED in between: retry the insert once.
 
+    def live_buy(self, alert_id):
+        """The alert's buy that is pending or filled, or None."""
+        with self._connect() as conn:
+            return self._live_buy(conn, alert_id)
+
     def _live_buy(self, conn, alert_id):
         return _wire(conn.execute(
             f"{_SELECT} WHERE alert_id = ? AND side = 'BUY' AND status != 'FAILED'", (alert_id,)
