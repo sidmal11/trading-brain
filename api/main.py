@@ -398,6 +398,16 @@ def get_orders():
     return trading.get_trades_store().list_orders()
 
 
+@router.get("/data-quality")
+def get_data_quality():
+    """The latest data-quality report per stored ticker; empty off SQLite (no bar store there)."""
+    if Config.STORAGE_BACKEND != "sqlite":
+        return []
+    from market_data.bar_store import BarStore
+
+    return BarStore(Config.SQLITE_PATH).reports()
+
+
 @router.get("/positions")
 def get_positions():
     if Config.STORAGE_BACKEND != "sqlite":

@@ -421,3 +421,13 @@ def test_a_successful_quote_is_reused_within_the_cache_window(monkeypatch):
 def test_old_api_paths_are_gone(client):
     assert client.get("/api/signals").status_code == 404
     assert client.get("/api/v1/signals").status_code == 200
+
+
+def test_data_quality_route_lists_reports(client, monkeypatch, tmp_path):
+    from market_data.bar_store import BarStore
+
+    monkeypatch.setattr(api_main.Config, "STORAGE_BACKEND", "sqlite")
+    monkeypatch.setattr(api_main.Config, "SQLITE_PATH", str(tmp_path / "q.db"))
+    BarStore(str(tmp_path / "q.db")).save_report("AAPL", {"status": "warn", "issues": ["Volume 0 on 2026-11-16"]})
+    [row] = client.get("/api/v1/data-quality").json()
+    assert row["ticker"] == "AAPL" and row["status"] == "warn" and row["issues"] == ["Volume 0 on 2026-11-16"]

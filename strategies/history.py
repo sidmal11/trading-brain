@@ -1,8 +1,11 @@
-"""Completed daily bars, downloaded once per trading day and cached in the poll process."""
+"""Completed daily bars: from the bar store on SQLite; otherwise (legacy DynamoDB) downloaded once a day."""
 import logging
 
 import pandas as pd
 import yfinance as yf
+
+from config import Config
+from market_data.bar_store import BarStore
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +14,8 @@ _cache = {}  # {"today": str, "bars": {ticker: [Bar]}}; a later day replaces it
 
 def completed_bars(tickers, today):
     """{ticker: [(date, high, low, close)]}, oldest first, without today's partial bar. Failure gives {}."""
+    if Config.STORAGE_BACKEND == "sqlite":
+        return BarStore(Config.SQLITE_PATH).daily(tickers, before=today)  # filled by market_data.refresh
     if _cache.get("today") == today:
         return _cache["bars"]
     try:

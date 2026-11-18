@@ -12,7 +12,10 @@ from utils.market_clock import MARKET_TZ, MIN_SESSION_FRACTION, session_fraction
 from datetime import datetime, timezone
 from api.trading import price_of
 from api.validity import invalid_reason
-from utils.api_client import UNIVERSE
+from utils.api_client import REFERENCE, UNIVERSE
+from market_data.bar_store import BarStore
+from market_data.refresh import refresh_daily
+from datetime import date
 from strategies import macd, strategy_notes, volume
 from strategies.history import completed_bars
 
@@ -20,6 +23,23 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _macd_days = set()  # trading dates whose MACD pass finished in this process
+_bar_days = set()  # trading dates whose bar refresh succeeded in this process
+
+
+def _refresh_bars(today):
+    """Once per trading date: store yesterday's completed bars and re-check data quality (SQLite only)."""
+    if Config.STORAGE_BACKEND != "sqlite" or today in _bar_days:
+        return
+    out = refresh_daily(BarStore(Config.SQLITE_PATH), date.fromisoformat(today), UNIVERSE + REFERENCE)
+    if not out["failed"]:  # a failed refresh is retried on the next poll
+        _bar_days.add(today)
+
+
+def _invalid_tickers():
+    """{ticker: issues} for tickers whose stored bars cannot be trusted; they get no alert."""
+    if Config.STORAGE_BACKEND != "sqlite":
+        return {}
+    return {r["ticker"]: r["issues"] for r in BarStore(Config.SQLITE_PATH).reports() if r["status"] == "invalid"}
 
 
 def _request_extras(settings, alert_id, ticker, price, stop):
@@ -106,6 +126,7 @@ def lambda_handler(event, context):
     # shortcut: on DynamoDB list_alerts is one scan page (about 1 MB), fine at a few alerts a day.
     alerts = db.list_alerts(limit=10**9)
     expire_sweep(db, telegram, settings, price_of, alerts)
+    _refresh_bars(trading_date())
 
     fraction = session_fraction()
     if fraction is None:
@@ -181,6 +202,9 @@ def lambda_handler(event, context):
             messages=sent,
         )
         seen.add((ticker, sig["strategy"], today))
+        held.add(ticker)
+    for ticker, issues in _invalid_tickers().items():
+        logger.info("%s skipped: %s", ticker, "; ".join(issues))
         held.add(ticker)
 
     # 2. Process potential candidates

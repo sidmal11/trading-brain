@@ -109,3 +109,18 @@ def test_strategy_notes_fall_back_without_the_sections(monkeypatch):
     monkeypatch.setattr(strategies.Path, "read_text", lambda self, encoding=None: text)
     n = strategies.strategy_notes("macd")
     assert n.startswith("# Plan") and len(n) == 6000
+
+
+def test_completed_bars_read_the_store_on_sqlite(monkeypatch, tmp_path):
+    from config import Config
+    from market_data.bar_store import BarStore
+    from market_data.bars import Bar
+
+    monkeypatch.setattr(Config, "STORAGE_BACKEND", "sqlite")
+    monkeypatch.setattr(Config, "SQLITE_PATH", str(tmp_path / "s.db"))
+    BarStore(Config.SQLITE_PATH).upsert("A", [Bar(d, 11.0, 9.0, 10.0, 10.0, 1, 10.0)
+                                              for d in ("2026-10-02", "2026-10-05", "2026-10-06")])
+    with patch("strategies.history.yf.download") as dl:
+        out = history.completed_bars(["A"], "2026-10-06")
+    assert dl.call_count == 0
+    assert [b[0] for b in out["A"]] == ["2026-10-02", "2026-10-05"]

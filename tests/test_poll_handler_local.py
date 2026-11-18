@@ -88,6 +88,8 @@ def poll(monkeypatch, tmp_path):
     monkeypatch.setattr(lambda_function, "completed_bars", lambda tickers, today: {})
     monkeypatch.setattr(lambda_function, "_macd_days", set())
     monkeypatch.setattr(FakeLlm, "calls", [])
+    monkeypatch.setattr(lambda_function, "refresh_daily", lambda *a, **k: {"failed": False})  # no Yahoo
+    monkeypatch.setattr(lambda_function, "_bar_days", set())
     http = Telegram()
     monkeypatch.setattr(tc.requests, "post", http)
     http.prices = {}  # the sweep's quotes; a ticker not listed has no price this poll
@@ -572,3 +574,31 @@ def test_ticker_rejected_today_is_skipped_and_allowed_next_day(poll, monkeypatch
     monkeypatch.setattr(lambda_function, "trading_date", lambda: tomorrow)
     lambda_function.lambda_handler({}, None)
     assert len(db.list_alerts()) == 2
+
+
+# ---------- bar store (R1) ----------
+
+def test_poll_refreshes_bars_once_per_trading_day(poll, monkeypatch):
+    calls = []
+    monkeypatch.setattr(lambda_function, "refresh_daily",
+                        lambda store, today, tickers: calls.append((str(today), sorted(tickers))) or {"failed": False})
+    lambda_function.lambda_handler({}, None)
+    lambda_function.lambda_handler({}, None)
+    assert len(calls) == 1 and calls[0][0] == "2026-11-16"
+    assert "SPY" in calls[0][1] and "XLK" in calls[0][1] and "NVDA" in calls[0][1]
+
+
+def test_failed_refresh_is_retried_next_poll(poll, monkeypatch):
+    calls = []
+    monkeypatch.setattr(lambda_function, "refresh_daily", lambda *a: calls.append(1) or {"failed": True})
+    lambda_function.lambda_handler({}, None)
+    lambda_function.lambda_handler({}, None)
+    assert len(calls) == 2
+
+
+def test_poll_skips_a_ticker_with_invalid_bars(poll):
+    from market_data.bar_store import BarStore
+
+    BarStore(Config.SQLITE_PATH).save_report("NVDA", {"status": "invalid", "issues": ["Stale: newest bar 2026-11-10"]})
+    lambda_function.lambda_handler({}, None)
+    assert all(a["ticker"] != "NVDA" for a in alert_store().list_alerts())

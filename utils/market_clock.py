@@ -1,6 +1,8 @@
-"""US equity regular-session clock (09:30-16:00 America/New_York, Mon-Fri)."""
+"""US equity regular-session clock: 09:30 to 16:00 America/New_York (13:00 on half days), NYSE trading days."""
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
+
+from market_data.calendar import session_minutes
 
 MARKET_TZ = ZoneInfo("America/New_York")
 SESSION_OPEN = time(9, 30)
@@ -17,15 +19,12 @@ def trading_date(now: datetime | None = None) -> str:
 
 
 def session_fraction(now: datetime | None = None) -> float | None:
-    """Fraction of the regular session elapsed, in (0, 1); None when closed.
-
-    shortcut: holidays and half days are unknown, so a weekday holiday reads as open and a 13:00 ET early close
-    counts as a full session; add a calendar if it matters.
-    """
+    """Fraction of the regular session elapsed, in (0, 1); None when closed (weekend, holiday, outside hours)."""
     et = _eastern(now)
-    if et.weekday() >= 5:
+    minutes = session_minutes(et.date())
+    if minutes is None:
         return None
     elapsed = (et.hour * 60 + et.minute + et.second / 60) - (SESSION_OPEN.hour * 60 + SESSION_OPEN.minute)
-    if elapsed <= 0 or elapsed >= SESSION_MINUTES:
+    if elapsed <= 0 or elapsed >= minutes:
         return None
-    return elapsed / SESSION_MINUTES
+    return elapsed / minutes

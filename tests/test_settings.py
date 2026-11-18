@@ -177,6 +177,8 @@ def poll_env(monkeypatch, tmp_path):
     monkeypatch.setattr(lambda_function, "LlmClient", FakeLlm)
     monkeypatch.setattr(lambda_function, "completed_bars", lambda tickers, today: {})
     monkeypatch.setattr(lambda_function, "_macd_days", set())
+    monkeypatch.setattr(lambda_function, "refresh_daily", lambda *a, **k: {"failed": False})  # no Yahoo
+    monkeypatch.setattr(lambda_function, "_bar_days", set())
     sent = []
 
     class Resp:

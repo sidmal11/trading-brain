@@ -10,6 +10,8 @@ UNIVERSE = [
     "JPM", "BAC", "GS", "V", "MA", "XOM", "CVX", "WMT", "COST", "HD",
     "DIS", "NKE", "SBUX", "INTC", "CSCO", "ORCL", "CRM", "ADBE", "PYPL", "UBER",
 ]
+# Stored for relative strength and regime (owner Q12); never scanned or alerted on.
+REFERENCE = ["SPY", "QQQ", "IWM", "XLK", "SMH", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLC", "XLU"]
 
 
 def _volume_score(volumes, session_fraction=1.0):
