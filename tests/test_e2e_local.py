@@ -72,6 +72,7 @@ def world(request, monkeypatch, tmp_path):
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setattr(Config, "STORAGE_BACKEND", backend)
     monkeypatch.setattr(Config, "SQLITE_PATH", str(tmp_path / "trading.db"))
+    monkeypatch.setattr(Config, "TRADES_SQLITE_PATH", str(tmp_path / "trades.db"))
 
     ctx = mock_aws() if backend == "dynamodb" else contextlib.nullcontext()
     with ctx:
