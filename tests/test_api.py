@@ -34,6 +34,15 @@ class FakeDb:
     def get_alert(self, alert_id):
         return next((a for a in self.alerts if a["alertId"] == alert_id), None)
 
+    def set_prompt(self, chat_id, alert_id):
+        pass
+
+    def get_prompt(self, chat_id):
+        return None
+
+    def clear_prompt(self, chat_id):
+        pass
+
     def update_alert_status(self, alert_id, status):
         if not self.update_succeeds:
             return False
@@ -120,8 +129,11 @@ class _NoopTelegram:
     def answer_callback_query(self, *args):
         self.calls.append(args)
 
-    def send_text(self, chat_id, text):
+    def send_text(self, chat_id, text, keyboard=None):
         self.texts.append((chat_id, text))
+
+    def clear_buttons(self, chat_id, message_id):
+        pass
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

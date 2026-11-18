@@ -12,11 +12,14 @@ read API's webhook route hands to `DbClient.update_alert_status`.
 """
 
 import logging
+import math
+import re
 from datetime import datetime, timedelta, timezone
 from html import escape
 
 import requests
 
+from api.validity import format_qty
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -76,6 +79,74 @@ def parse_callback(callback_data: str):
         return None
 
     return alert_id, ticker, status
+
+
+MAX_SHARES = 1_000_000
+MAX_DOLLARS = 10_000_000
+AMOUNT_PROMPT = "Send shares (e.g. 5 or 0.25) or dollars (e.g. $10)"
+AMOUNT_UNREADABLE = "Could not read that amount. Send shares (e.g. 5 or 0.25) or dollars (e.g. $10)."
+
+
+def _amount(text: str, cap: float):
+    """A positive, finite number no larger than `cap`, or None. Plain decimals only (no 1e3)."""
+    if not re.fullmatch(r"\d+(\.\d+)?", text or ""):
+        return None
+    value = float(text)
+    return value if 0 < value <= cap and math.isfinite(value) else None
+
+
+def _money(x: float) -> str:
+    return f"{x:.2f}".rstrip("0").rstrip(".")
+
+
+def build_amount_keyboard(alert_id: str, ticker: str, shares: float, dollars: float) -> dict:
+    """Request buttons when trading is on: buy the suggestion, buy dollarsPerTrade, type an amount, reject."""
+    q, d = format_qty(shares), _money(dollars)
+    return {"inline_keyboard": [
+        [{"text": f"Buy {q} sh", "callback_data": f"bq:{alert_id}:{q}"},
+         {"text": f"Buy ${d}", "callback_data": f"bd:{alert_id}:{d}"}],
+        [{"text": "Other amount", "callback_data": f"ba:{alert_id}"},
+         {"text": "❌ Reject", "callback_data": f"{REJECT_PREFIX}:{alert_id}:{ticker}"}],
+    ]}
+
+
+def build_confirm_keyboard(alert_id: str, shares: float | None, dollars: float | None) -> dict:
+    """Confirm or cancel a typed amount; the amount rides in the Confirm callback."""
+    value = f"s{format_qty(shares)}" if shares is not None else f"d{_money(dollars)}"
+    return {"inline_keyboard": [[{"text": "Confirm", "callback_data": f"bc:{alert_id}:{value}"},
+                                 {"text": "Cancel", "callback_data": f"bx:{alert_id}"}]]}
+
+
+def parse_amount_callback(callback_data: str):
+    """`(action, alert_id, shares, dollars)` for an amount button, action "buy", "ask" or "cancel"; else None."""
+    parts = (callback_data or "").split(":")
+    if len(parts) < 2 or not parts[1]:
+        return None
+    kind, alert_id = parts[0], parts[1]
+    if kind in ("ba", "bx") and len(parts) == 2:
+        return ("ask" if kind == "ba" else "cancel"), alert_id, None, None
+    if len(parts) != 3:
+        return None
+    value = parts[2]
+    if kind == "bc" and value[:1] in ("s", "d"):
+        kind, value = ("bq" if value[0] == "s" else "bd"), value[1:]
+    if kind == "bq" and (shares := _amount(value, MAX_SHARES)) is not None:
+        return "buy", alert_id, shares, None
+    if kind == "bd" and (dollars := _amount(value, MAX_DOLLARS)) is not None:
+        return "buy", alert_id, None, dollars
+    return None
+
+
+def parse_amount_text(text: str):
+    """A typed amount: `5` or `0.25` is shares, `$10` or `10$` is dollars. Returns (shares, dollars) or None."""
+    m = re.fullmatch(r"\s*(\$)?\s*([0-9.]+)\s*(\$)?\s*", text or "")
+    if not m or (m.group(1) and m.group(3)):
+        return None
+    if m.group(1) or m.group(3):
+        dollars = _amount(m.group(2), MAX_DOLLARS)
+        return None if dollars is None else (None, dollars)
+    shares = _amount(m.group(2), MAX_SHARES)
+    return None if shares is None else (shares, None)
 
 
 def _truncate(body: str, tail: str = "") -> str:
@@ -139,7 +210,7 @@ class TelegramClient:
         admins.update(c.strip() for c in Config.ADMIN_CHAT_IDS.split(",") if c.strip())
         return admins
 
-    def _alert_payload(self, chat_id, ticker, signal_details, analysis, alert_id, order_line=None):
+    def _alert_payload(self, chat_id, ticker, signal_details, analysis, alert_id, order_line=None, keyboard=None):
         payload = {
             "chat_id": chat_id,
             "text": self.format_alert(ticker, signal_details, analysis),
@@ -149,7 +220,7 @@ class TelegramClient:
         # Buttons only for admins: a decision is the operator's, so a subscriber's
         # tap must never reach the decision path.
         if alert_id and str(chat_id) in self.admin_chat_ids:
-            payload["reply_markup"] = build_approval_keyboard(alert_id, ticker)
+            payload["reply_markup"] = keyboard or build_approval_keyboard(alert_id, ticker)
             if order_line:
                 payload["text"] = self.format_alert(ticker, signal_details, analysis, f"\n\n{escape(order_line)}")
         return payload
@@ -183,7 +254,7 @@ class TelegramClient:
 
         return data.get("result", {}).get("message_id")
 
-    def broadcast_alert(self, ticker, signal_details, analysis, alert_id, chat_ids, order_line=None):
+    def broadcast_alert(self, ticker, signal_details, analysis, alert_id, chat_ids, order_line=None, keyboard=None):
         """Send one alert to every subscriber.
 
         Returns `(admin_message_id, blocked, sent)`. `admin_message_id` is the id of
@@ -200,7 +271,7 @@ class TelegramClient:
         blocked = []
         sent = []
         for chat_id in chat_ids:
-            payload = self._alert_payload(chat_id, ticker, signal_details, analysis, alert_id, order_line)
+            payload = self._alert_payload(chat_id, ticker, signal_details, analysis, alert_id, order_line, keyboard)
             data = self._post("sendMessage", payload)
             if data and data.get("ok"):
                 message_id = data.get("result", {}).get("message_id")
@@ -231,9 +302,19 @@ class TelegramClient:
         data = self._post("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": reason})
         return bool(data and data.get("ok"))
 
-    def send_text(self, chat_id, text: str):
-        """Plain reply to a chat, used for subscribe and unsubscribe confirmations."""
-        return self._post("sendMessage", {"chat_id": chat_id, "text": text})
+    def send_text(self, chat_id, text: str, keyboard=None):
+        """Plain reply to a chat (confirmations, prompts); `keyboard` adds inline buttons."""
+        payload = {"chat_id": chat_id, "text": text}
+        if keyboard:
+            payload["reply_markup"] = keyboard
+        return self._post("sendMessage", payload)
+
+    def clear_buttons(self, chat_id, message_id):
+        """Remove the inline buttons from a message (a cancelled amount confirmation)."""
+        if not message_id:
+            return None
+        return self._post("editMessageReplyMarkup",
+                          {"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}})
 
     def answer_callback_query(self, callback_query_id: str, text: str = ""):
         """Clear the spinner on the tapped button.

@@ -20,6 +20,7 @@ from utils.telegram_client import (  # noqa: E402
     build_approval_keyboard,
     parse_callback,
 )
+from utils import telegram_client as tc  # noqa: E402
 
 
 # ── Callback payloads ─────────────────────────────────────────────────────────
@@ -197,3 +198,39 @@ def test_broadcast_returns_every_recipient_message(monkeypatch):
     assert admin_id == 11 and blocked == []
     assert [(s["chatId"], s["messageId"]) for s in sent] == [("1", 11), ("555", 12)]
     assert all(s["sentAt"].endswith("+00:00") for s in sent)
+
+
+# ── Amount buttons and typed amounts (phase 1 task 4) ─────────────────────────
+
+def test_amount_keyboard_callbacks_fit_telegrams_64_bytes():
+    alert_id = "123e4567-e89b-12d3-a456-426614174000"
+    kb = tc.build_amount_keyboard(alert_id, "GOOGL", 123456.123456, 10000)
+    data = [b["callback_data"] for row in kb["inline_keyboard"] for b in row]
+    assert data == [f"bq:{alert_id}:123456.123456", f"bd:{alert_id}:10000", f"ba:{alert_id}", f"reject:{alert_id}:GOOGL"]
+    assert [b["text"] for row in kb["inline_keyboard"] for b in row][:2] == ["Buy 123456.123456 sh", "Buy $10000"]
+    assert all(len(d.encode()) <= 64 for d in data)
+    confirm = tc.build_confirm_keyboard(alert_id, None, 9999999.99)
+    assert all(len(b["callback_data"].encode()) <= 64 for row in confirm["inline_keyboard"] for b in row)
+
+
+@pytest.mark.parametrize("data, expected", [
+    ("bq:a1:0.25", ("buy", "a1", 0.25, None)),
+    ("bd:a1:10", ("buy", "a1", None, 10.0)),
+    ("bc:a1:s3", ("buy", "a1", 3.0, None)),
+    ("bc:a1:d10.5", ("buy", "a1", None, 10.5)),
+    ("ba:a1", ("ask", "a1", None, None)),
+    ("bx:a1", ("cancel", "a1", None, None)),
+    ("bq:a1:0", None), ("bq:a1:-1", None), ("bq:a1:nan", None), ("bq:a1:inf", None),
+    ("bq:a1:1000001", None), ("bd:a1:10000001", None), ("bc:a1:x3", None), ("bq::1", None), ("zz:a1", None),
+    ("approve:a1:AAPL", None),
+])
+def test_parse_amount_callback(data, expected):
+    assert tc.parse_amount_callback(data) == expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("5", (5.0, None)), ("0.25", (0.25, None)), (" $10 ", (None, 10.0)), ("10$", (None, 10.0)),
+    ("$ 2.5", (None, 2.5)), ("$10$", None), ("ten", None), ("", None), ("0", None), ("-3", None), ("1e3", None),
+])
+def test_parse_amount_text(text, expected):
+    assert tc.parse_amount_text(text) == expected

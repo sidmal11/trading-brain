@@ -137,3 +137,108 @@ def test_tap_approve_unexpected_error_is_answered_not_redelivered(tg, monkeypatc
     assert "AAPL not bought: Broker error." in tg.http.texts()
     assert all(o["status"] != "FILLED" for o in tg.trades.list_orders())
     assert tg.status() == "PENDING"
+
+
+# ── Amounts (phase 1 task 4) ──────────────────────────────────────────────────
+
+def _tap_data(tg, data, message_id=7):
+    return tg.client.post("/api/telegram/webhook", headers=HEADERS, json={"callback_query": {
+        "id": "cb", "data": data, "from": {"id": int(ADMIN)},
+        "message": {"message_id": message_id, "chat": {"id": int(ADMIN)}},
+    }})
+
+
+def _say(tg, text, chat_id=ADMIN):
+    return tg.client.post("/api/telegram/webhook", headers=HEADERS, json={"message": {
+        "chat": {"id": int(chat_id), "type": "private"}, "from": {"id": int(chat_id)}, "text": text}})
+
+
+def _keyboards(http):
+    return [p.get("reply_markup") for m, p in http.calls if m == "sendMessage" and p.get("reply_markup")]
+
+
+def test_preset_shares_button_buys_that_quantity(tg):
+    _tap_data(tg, "bq:a1:0.5")
+    assert "Bought 0.5 AAPL at $182.40 (MOCK)." in tg.http.texts()
+    assert [o["quantity"] for o in tg.client.get("/api/orders").json()] == [0.5]
+    assert tg.status() == "APPROVED"
+
+
+def test_preset_dollars_button_buys_that_amount(tg):
+    _tap_data(tg, "bd:a1:10")
+    assert [o["quantity"] for o in tg.client.get("/api/orders").json()] == [0.054824]  # 10 / 182.4 rounded down
+
+
+def test_other_amount_asks_then_confirms_then_buys(tg):
+    _tap_data(tg, "ba:a1")
+    assert tg.http.texts()[-1] == "Send shares (e.g. 5 or 0.25) or dollars (e.g. $10)"
+    _say(tg, "$10")
+    assert tg.http.texts()[-1] == "Buy 0.054824 AAPL, about $10.00 (MOCK)?"
+    buttons = [b["callback_data"] for row in _keyboards(tg.http)[-1]["inline_keyboard"] for b in row]
+    assert buttons == ["bc:a1:d10", "bx:a1"]
+    assert tg.client.get("/api/orders").json() == []  # nothing bought before Confirm
+    _tap_data(tg, "bc:a1:d10", message_id=8)
+    assert [o["quantity"] for o in tg.client.get("/api/orders").json()] == [0.054824]
+
+
+def test_typed_shares_and_trailing_dollar_sign_are_read(tg):
+    _tap_data(tg, "ba:a1")
+    _say(tg, "10$")
+    assert tg.http.texts()[-1] == "Buy 0.054824 AAPL, about $10.00 (MOCK)?"
+    _tap_data(tg, "ba:a1")
+    _say(tg, "0.25")
+    assert tg.http.texts()[-1] == "Buy 0.25 AAPL, about $45.60 (MOCK)?"
+
+
+def test_unreadable_amount_keeps_the_prompt(tg):
+    _tap_data(tg, "ba:a1")
+    _say(tg, "lots")
+    assert tg.http.texts()[-1] == "Could not read that amount. Send shares (e.g. 5 or 0.25) or dollars (e.g. $10)."
+    _say(tg, "2")
+    assert tg.http.texts()[-1] == "Buy 2 AAPL, about $364.80 (MOCK)?"
+
+
+def test_amount_under_one_dollar_keeps_the_prompt(tg):
+    _tap_data(tg, "ba:a1")
+    _say(tg, "$0.50")
+    assert tg.http.texts()[-1] == "Minimum order is $1."
+    _say(tg, "$5")
+    assert tg.http.texts()[-1].startswith("Buy 0.027412 AAPL")
+
+
+def test_cancel_clears_without_buying(tg):
+    _tap_data(tg, "ba:a1")
+    _say(tg, "$10")
+    _tap_data(tg, "bx:a1", message_id=8)
+    assert _answers(tg.http)[-1] == "Cancelled."
+    assert tg.client.get("/api/orders").json() == [] and tg.status() == "PENDING"
+
+
+def test_text_with_no_prompt_or_from_a_subscriber_does_nothing(tg):
+    _say(tg, "$10")
+    _tap_data(tg, "ba:a1")
+    before = len(tg.http.calls)
+    _say(tg, "$10", chat_id="99")  # a subscriber, not an admin
+    assert len(tg.http.calls) == before
+
+
+def test_prompt_older_than_ten_minutes_is_ignored(tg):
+    _tap_data(tg, "ba:a1")
+    with tg.alerts._connect() as conn:
+        conn.execute("UPDATE telegram_prompts SET created_at = '2000-01-01T00:00:00+00:00'")
+    before = len(tg.http.calls)
+    _say(tg, "$10")
+    assert len(tg.http.calls) == before
+
+
+def test_confirm_on_an_expired_request_is_refused(tg):
+    tg.alerts.expire_alert("a1", "Price fell to the stop $170.00.")
+    _tap_data(tg, "bc:a1:s1")
+    assert _answers(tg.http) == ["Request expired: Price fell to the stop $170.00."]
+    assert tg.client.get("/api/orders").json() == []
+
+
+def test_commands_still_work_with_an_open_prompt(tg):
+    _tap_data(tg, "ba:a1")
+    r = _say(tg, "/stop")
+    assert r.json().get("unsubscribed") == ADMIN

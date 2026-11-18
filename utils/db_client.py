@@ -130,6 +130,16 @@ class DbClient:
 
         return response.get('Item')
 
+    # shortcut: no amount prompts on DynamoDB; trading needs SQLite, so its request buttons never offer "Other amount".
+    def set_prompt(self, chat_id, alert_id):
+        return None
+
+    def get_prompt(self, chat_id):
+        return None
+
+    def clear_prompt(self, chat_id):
+        return None
+
     def expire_alert(self, alert_id, reason):
         """PENDING -> EXPIRED with a reason. Returns whether it changed."""
         try:

@@ -40,10 +40,11 @@ from utils.broker import get_broker
 from utils.db_client import DECISIONS, DbClient
 from utils.settings_store import effective_settings
 from utils.storage import alert_store, subscriber_store
-from utils.telegram_client import TelegramClient, parse_callback
+from utils.telegram_client import (AMOUNT_PROMPT, AMOUNT_UNREADABLE, TelegramClient, build_confirm_keyboard,
+                                   parse_amount_callback, parse_amount_text, parse_callback)
 
 from . import market_source, performance, top_stocks, trading
-from .validity import format_qty, suggest_quantity
+from .validity import format_qty, quantity_for, suggest_quantity
 from .auth import auth_required, email_otp_enabled, get_otp_service, require_user
 
 logger = logging.getLogger(__name__)
@@ -521,6 +522,9 @@ def telegram_webhook(
 
     message = update.get("message")
     if message:
+        text = (message.get("text") or "").strip()
+        if text and not text.startswith("/"):
+            return _handle_amount_reply(message, text, db)
         return _handle_command(message, subscribers)
 
     callback = update.get("callback_query")
@@ -536,29 +540,47 @@ def telegram_webhook(
         telegram.answer_callback_query(callback.get("id", ""), "Only the operator can decide.")
         return {"ok": True, "ignored": "tap from non-admin"}
 
-    parsed = parse_callback(callback.get("data", ""))
-    if parsed is None:
+    data = callback.get("data", "")
+    parsed = parse_callback(data)
+    amount = None if parsed else parse_amount_callback(data)
+    if parsed is None and amount is None:
         return {"ok": True, "ignored": "unrecognised callback data"}
-
-    alert_id, ticker, decision = parsed
+    if parsed:
+        alert_id, ticker, decision = parsed
+        action, shares, dollars = ("buy" if decision == "APPROVED" else "reject"), None, None
+    else:
+        action, alert_id, shares, dollars = amount
+        decision = "APPROVED"
 
     existing = db.get_alert(alert_id)
     if existing is None:
         telegram.answer_callback_query(callback.get("id", ""), "That alert is no longer available.")
         return {"ok": True, "ignored": "unknown alert"}
+    ticker = existing.get("ticker") or (parsed[1] if parsed else "")
 
     cb_id = callback.get("id", "")
+    tapped = callback.get("message") or {}
+    chat_id = (tapped.get("chat") or {}).get("id") or tapper
+    if action == "cancel":
+        db.clear_prompt(chat_id)
+        telegram.answer_callback_query(cb_id, "Cancelled.")
+        telegram.clear_buttons(chat_id, tapped.get("message_id"))
+        return {"ok": True, "alertId": alert_id, "status": existing.get("status")}
     if existing.get("status") == "EXPIRED":
         telegram.answer_callback_query(
             cb_id, f"Request expired: {existing.get('expiredReason') or 'No longer valid.'}")
         return {"ok": True, "alertId": alert_id, "status": "EXPIRED"}
-    tapped = callback.get("message") or {}
-    chat_id = (tapped.get("chat") or {}).get("id") or tapper
+    if action == "ask":
+        db.set_prompt(chat_id, alert_id)
+        telegram.answer_callback_query(cb_id, "")
+        telegram.send_text(chat_id, AMOUNT_PROMPT)
+        return {"ok": True, "alertId": alert_id, "status": "PENDING"}
+
     answer = f"{ticker}: {decision.title()}"
     order = None
     try:
         if decision == "APPROVED":
-            order = trading.execute_approval(existing, db)
+            order = trading.execute_approval(existing, db, shares=shares, dollars=dollars)
             recorded = True
         else:
             recorded = db.update_alert_status(alert_id, decision)
@@ -585,6 +607,7 @@ def telegram_webhook(
         # Another approval of this alert is mid-flight; do not claim a buy.
         telegram.answer_callback_query(cb_id, f"{ticker}: order in progress.")
     else:
+        db.clear_prompt(chat_id)
         if order is not None:
             answer = f"Bought {format_qty(order['quantity'])} {ticker} (MOCK)"
             telegram.send_text(
@@ -592,8 +615,48 @@ def telegram_webhook(
             )
         telegram.answer_callback_query(cb_id, answer)
         telegram.update_message_decision(tapped.get("message_id"), ticker, decision, chat_id=chat_id)
+        stored = existing.get("telegramMessageId")
+        if stored and str(stored) != str(tapped.get("message_id")):
+            # A Confirm tap sits on its own message; stamp the original request too.
+            telegram.update_message_decision(stored, ticker, decision, chat_id=existing.get("telegramChatId") or chat_id)
 
     return {"ok": True, "alertId": alert_id, "status": decision}
+
+
+def _handle_amount_reply(message, text, db):
+    """An admin's typed amount after "Other amount": reply with a confirm step, an error, or nothing."""
+    chat = message.get("chat") or {}
+    chat_id = str(chat.get("id", ""))
+    telegram = TelegramClient()
+    if chat.get("type") != "private" or chat_id not in telegram.admin_chat_ids:
+        return {"ok": True, "ignored": "text from a non-admin chat"}
+    alert_id = db.get_prompt(chat_id)
+    if not alert_id:
+        return {"ok": True, "ignored": "no amount was asked for"}
+    alert = db.get_alert(alert_id)
+    if alert is None or alert.get("status") != "PENDING":
+        db.clear_prompt(chat_id)
+        reason = (alert or {}).get("expiredReason")
+        telegram.send_text(chat_id, f"Request expired: {reason}" if reason else "That request is no longer open.")
+        return {"ok": True, "ignored": "request not open"}
+    amount = parse_amount_text(text)
+    if amount is None:
+        telegram.send_text(chat_id, AMOUNT_UNREADABLE)  # the prompt stays open
+        return {"ok": True, "alertId": alert_id, "status": "PENDING"}
+    shares, dollars = amount
+    price = trading.price_of(alert["ticker"])
+    if price is None or price <= 0:
+        telegram.send_text(chat_id, "Price unavailable.")
+        return {"ok": True, "alertId": alert_id, "status": "PENDING"}
+    quantity = quantity_for(price, shares, dollars, 0)
+    cost = quantity * price
+    if round(cost, 2) < 1:  # same cent-precision rule as the buy itself
+        telegram.send_text(chat_id, "Minimum order is $1.")
+        return {"ok": True, "alertId": alert_id, "status": "PENDING"}
+    db.clear_prompt(chat_id)  # the Confirm button carries the amount from here
+    telegram.send_text(chat_id, f"Buy {format_qty(quantity)} {alert['ticker']}, about ${cost:.2f} (MOCK)?",
+                       keyboard=build_confirm_keyboard(alert_id, shares, dollars))
+    return {"ok": True, "alertId": alert_id, "status": "PENDING"}
 
 
 _WELCOME = (

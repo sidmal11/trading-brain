@@ -14,13 +14,14 @@ field names the DynamoDB rows use, so the API and dashboard read both the same w
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from config import Config
 
 STATUS_PENDING = "PENDING"
 STATUS_EXPIRED = "EXPIRED"
 VALID_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", STATUS_EXPIRED})
+PROMPT_TTL = timedelta(minutes=10)  # a typed Telegram amount counts only this long after "Other amount"
 
 
 def _now_iso():
@@ -38,6 +39,8 @@ class SqliteStore:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS subscribers (chat_id TEXT PRIMARY KEY, active INTEGER NOT NULL, doc TEXT NOT NULL)"
             )
+            conn.execute("CREATE TABLE IF NOT EXISTS telegram_prompts "
+                         "(chat_id TEXT PRIMARY KEY, alert_id TEXT NOT NULL, created_at TEXT NOT NULL)")
 
     def _connect(self):
         return sqlite3.connect(self.path, timeout=10)
@@ -109,6 +112,27 @@ class SqliteStore:
             item["reviewedAt"] = _now_iso()
             conn.execute("UPDATE alerts SET doc = ? WHERE alert_id = ?", (json.dumps(item), alert_id))
         return True
+
+    # ── Telegram amount prompts ──────────────────────────────────────────────
+
+    def set_prompt(self, chat_id, alert_id):
+        """Remember that this chat's next typed amount is for `alert_id` (replaces any earlier prompt)."""
+        with self._lock, self._connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO telegram_prompts (chat_id, alert_id, created_at) VALUES (?, ?, ?)",
+                         (str(chat_id), alert_id, _now_iso()))
+
+    def get_prompt(self, chat_id):
+        """The alert id this chat was asked an amount for, or None when there is none or it is over 10 minutes old."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT alert_id, created_at FROM telegram_prompts WHERE chat_id = ?",
+                               (str(chat_id),)).fetchone()
+        if not row or datetime.now(timezone.utc) - datetime.fromisoformat(row[1]) > PROMPT_TTL:
+            return None
+        return row[0]
+
+    def clear_prompt(self, chat_id):
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM telegram_prompts WHERE chat_id = ?", (str(chat_id),))
 
     def expire_alert(self, alert_id, reason):
         """PENDING -> EXPIRED with a reason. Returns whether it changed."""

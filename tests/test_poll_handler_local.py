@@ -210,27 +210,36 @@ def _trading(monkeypatch, on, dollars=500):
                         lambda: {**base, "volumeThreshold": 1.0, "tradingEnabled": on, "dollarsPerTrade": dollars})
 
 
-def test_order_line_only_on_admin_copy(poll, monkeypatch):
+def _buttons(payload):
+    return [b["callback_data"] for row in (payload.get("reply_markup") or {}).get("inline_keyboard", []) for b in row]
+
+
+def test_order_line_and_amount_buttons_only_on_admin_copy(poll, monkeypatch):
     _trading(monkeypatch, True)
     lambda_function.lambda_handler({}, None)
     sends = poll.sends()
-    admin = [p for p in sends if str(p["chat_id"]) == ADMIN][0]["text"]
-    sub = [p for p in sends if str(p["chat_id"]) == SUB][0]["text"]
-    assert "Approve buys 2 NVDA at about $182.40, about $365 (MOCK)." in admin
-    assert "Approve buys" not in sub
+    admin = [p for p in sends if str(p["chat_id"]) == ADMIN][0]
+    sub = [p for p in sends if str(p["chat_id"]) == SUB][0]
+    assert "Suggested: 2.741228 NVDA at about $182.40, about $500.00 (MOCK)." in admin["text"]
+    data = _buttons(admin)
+    assert [d.split(":")[0] for d in data] == ["bq", "bd", "ba", "reject"]
+    assert data[0].endswith(":2.741228") and data[1].endswith(":500")
+    assert "Suggested" not in sub["text"] and _buttons(sub) == []
 
 
-def test_order_line_when_below_one_share(poll, monkeypatch):
+def test_small_dollar_amount_suggests_a_fraction(poll, monkeypatch):
     _trading(monkeypatch, True, dollars=100)
     lambda_function.lambda_handler({}, None)
-    admin = [p for p in poll.sends() if str(p["chat_id"]) == ADMIN][0]["text"]
-    assert "Approve will not buy: $100 is below one share at $182.40 (MOCK)." in admin
+    admin = [p for p in poll.sends() if str(p["chat_id"]) == ADMIN][0]
+    assert "Suggested: 0.548245 NVDA at about $182.40, about $100.00 (MOCK)." in admin["text"]
 
 
-def test_no_order_line_when_trading_off(poll, monkeypatch):
+def test_trading_off_keeps_approve_and_reject(poll, monkeypatch):
     _trading(monkeypatch, False)
     lambda_function.lambda_handler({}, None)
-    assert not any("Approve buys" in p["text"] or "MOCK" in p["text"] for p in poll.sends())
+    assert not any("Suggested" in p["text"] or "MOCK" in p["text"] for p in poll.sends())
+    admin = [p for p in poll.sends() if str(p["chat_id"]) == ADMIN][0]
+    assert [d.split(":")[0] for d in _buttons(admin)] == ["approve", "reject"]
 
 
 # ---------- strategies: checklist on every alert, MACD alerts ----------

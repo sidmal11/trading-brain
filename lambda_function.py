@@ -6,7 +6,8 @@ from utils.telegram_client import TelegramClient
 from utils.storage import alert_store, subscriber_store
 from utils.settings_store import MARKET_US_STOCKS, effective_settings
 from config import Config
-from utils.broker import whole_shares
+from api.validity import format_qty, suggest_quantity
+from utils.telegram_client import build_amount_keyboard
 from utils.market_clock import MARKET_TZ, MIN_SESSION_FRACTION, session_fraction, trading_date
 from datetime import datetime, timezone
 from api.trading import price_of
@@ -21,15 +22,18 @@ logger = logging.getLogger(__name__)
 _macd_days = set()  # trading dates whose MACD pass finished in this process
 
 
-def _order_line(settings, ticker, price):
-    """What Approve would do, shown on the admin copy only."""
+def _request_extras(settings, alert_id, ticker, price, stop):
+    """(order line, keyboard) for the admin copy: the suggested buy and the amount buttons.
+
+    (None, None) when trading is off or there is no usable price: the message then keeps Approve/Reject.
+    """
     if not settings.get("tradingEnabled") or not price:
-        return None
-    dollars = settings["dollarsPerTrade"]
-    q = whole_shares(dollars, price)
-    if q == 0:
-        return f"Approve will not buy: ${dollars} is below one share at ${price:.2f} (MOCK)."
-    return f"Approve buys {q} {ticker} at about ${price:.2f}, about ${q * price:,.0f} (MOCK)."
+        return None, None
+    qty = suggest_quantity(price, stop, settings)
+    if round(qty * price, 2) < 1:
+        return "Suggested amount is under the $1 minimum (MOCK).", None
+    line = f"Suggested: {format_qty(qty)} {ticker} at about ${price:.2f}, about ${qty * price:,.2f} (MOCK)."
+    return line, build_amount_keyboard(alert_id, ticker, qty, settings["dollarsPerTrade"])
 
 def _telegram_copies(alert):
     """Every recipient's copy; alerts saved before per-recipient ids fall back to the admin copy."""
@@ -149,8 +153,9 @@ def lambda_handler(event, context):
         message_id, sent = None, []
         if settings["telegramAlertsEnabled"]:
             recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + subscribers.active_chat_ids()))
+            order_line, keyboard = _request_extras(settings, alert_id, ticker, price, sig.get("stopPrice"))
             message_id, blocked, sent = telegram.broadcast_alert(
-                ticker, conditions, analysis, alert_id, recipients, _order_line(settings, ticker, price)
+                ticker, conditions, analysis, alert_id, recipients, order_line, keyboard
             )
             for chat_id in blocked:
                 subscribers.deactivate(chat_id)
