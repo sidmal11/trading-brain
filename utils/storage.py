@@ -39,6 +39,7 @@ class SqliteStore:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS subscribers (chat_id TEXT PRIMARY KEY, active INTEGER NOT NULL, doc TEXT NOT NULL)"
             )
+            conn.execute("CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY, sent_at TEXT NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS telegram_prompts "
                          "(chat_id TEXT PRIMARY KEY, alert_id TEXT NOT NULL, created_at TEXT NOT NULL)")
 
@@ -112,6 +113,12 @@ class SqliteStore:
             item["reviewedAt"] = _now_iso()
             conn.execute("UPDATE alerts SET doc = ? WHERE alert_id = ?", (json.dumps(item), alert_id))
         return True
+
+    def mark_notice(self, key):
+        """True the first time `key` is marked, False after (once-per-day messages survive a restart)."""
+        with self._lock, self._connect() as conn:
+            return conn.execute("INSERT OR IGNORE INTO notices (key, sent_at) VALUES (?, ?)",
+                                (key, _now_iso())).rowcount == 1
 
     # ── Telegram amount prompts ──────────────────────────────────────────────
 

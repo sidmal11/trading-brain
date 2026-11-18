@@ -35,6 +35,7 @@ def defaults() -> dict:
         "maxOrdersPerDay": 3,
         "maxChasePct": 3,
         "riskPerTrade": 50,
+        "stopAlertPct": 1,  # Telegram warning when a held position is this close to its stop
     }
 
 

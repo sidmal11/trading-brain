@@ -26,6 +26,7 @@ GOOD = {
     "maxOrdersPerDay": 3,
     "maxChasePct": 3,
     "riskPerTrade": 50,
+    "stopAlertPct": 1,
 }
 
 
@@ -127,11 +128,12 @@ def test_put_settings_rejects_out_of_range_trading_values(app_env, field, bad):
 
 def test_chase_and_risk_defaults():
     d = defaults()
-    assert (d["maxChasePct"], d["riskPerTrade"]) == (3, 50)
+    assert (d["maxChasePct"], d["riskPerTrade"], d["stopAlertPct"]) == (3, 50, 1)
 
 
 @pytest.mark.parametrize("field, bad", [
-    ("maxChasePct", 0.4), ("maxChasePct", 21), ("riskPerTrade", 0), ("riskPerTrade", 5001)])
+    ("maxChasePct", 0.4), ("maxChasePct", 21), ("riskPerTrade", 0), ("riskPerTrade", 5001),
+    ("stopAlertPct", 0), ("stopAlertPct", 25)])
 def test_put_settings_rejects_out_of_range_chase_and_risk(app_env, field, bad):
     assert app_env.put("/api/v1/settings", json={**GOOD, field: bad}).status_code == 422
 
@@ -168,6 +170,7 @@ def poll_env(monkeypatch, tmp_path):
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setattr(Config, "STORAGE_BACKEND", "sqlite")
     monkeypatch.setattr(Config, "SQLITE_PATH", str(tmp_path / "p.db"))
+    monkeypatch.setattr(Config, "TRADES_SQLITE_PATH", str(tmp_path / "trades.db"))
     monkeypatch.setattr(Config, "TELEGRAM_BOT_TOKEN", "123:fake")
     monkeypatch.setattr(Config, "TELEGRAM_CHAT_ID", "1000")
     monkeypatch.setattr(Config, "ADMIN_CHAT_IDS", "")
@@ -235,3 +238,8 @@ def test_browser_preflight_allows_put_for_settings(app_env):
         headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "PUT"},
     )
     assert "PUT" in r.headers.get("access-control-allow-methods", "")
+
+
+def test_stop_alert_distance_accepts_half_a_percent(app_env):
+    assert app_env.put("/api/v1/settings", json={**GOOD, "stopAlertPct": 0.5}).status_code == 200
+    assert app_env.get("/api/v1/settings").json()["stopAlertPct"] == 0.5

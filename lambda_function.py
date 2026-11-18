@@ -10,7 +10,7 @@ from api.validity import format_qty, suggest_quantity
 from utils.telegram_client import build_amount_keyboard
 from utils.market_clock import MARKET_TZ, MIN_SESSION_FRACTION, session_fraction, trading_date
 from datetime import datetime, timezone
-from api.trading import price_of
+from api.trading import get_trades_store, price_of
 from api.validity import invalid_reason
 from utils.api_client import REFERENCE, UNIVERSE
 from market_data.bar_store import BarStore
@@ -100,6 +100,30 @@ def expire_sweep(db, telegram, settings, price_of, alerts=None):
     return expired
 
 
+def stop_watch(trades, notices, telegram, settings, price_of, today):
+    """Warn admins once per ticker per day when a held mock position is within stopAlertPct of its stop.
+
+    Information only: nothing is sold. Returns the tickers warned about.
+    """
+    if not settings["telegramAlertsEnabled"] or not telegram.is_configured:
+        return []
+    sent = []
+    for p in trades.open_positions():
+        stop = p.get("stopPrice")
+        if not stop:
+            continue
+        price = price_of(p["ticker"])
+        if price is None or price > stop * (1 + settings["stopAlertPct"] / 100):
+            continue
+        if not notices.mark_notice(f"stop:{p['ticker']}:{today}"):
+            continue
+        word = "below" if price <= stop else "near"
+        for chat_id in sorted(telegram.admin_chat_ids):
+            telegram.send_text(chat_id, f"{p['ticker']} is {word} its stop ${stop:.2f}: now ${price:.2f} (MOCK position).")
+        sent.append(p["ticker"])
+    return sent
+
+
 def _decided_today(alert, today):
     """An EXPIRED or REJECTED request decided on today's US Eastern date."""
     stamp = alert.get("expiredAt") if alert.get("status") == "EXPIRED" else alert.get("reviewedAt")
@@ -127,6 +151,8 @@ def lambda_handler(event, context):
     alerts = db.list_alerts(limit=10**9)
     expire_sweep(db, telegram, settings, price_of, alerts)
     _refresh_bars(trading_date())
+    if Config.STORAGE_BACKEND == "sqlite":  # the mock account lives only on SQLite
+        stop_watch(get_trades_store(), db, telegram, settings, price_of, trading_date())
 
     fraction = session_fraction()
     if fraction is None:

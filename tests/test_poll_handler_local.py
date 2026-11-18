@@ -76,6 +76,7 @@ def poll(monkeypatch, tmp_path):
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setattr(Config, "STORAGE_BACKEND", "sqlite")
     monkeypatch.setattr(Config, "SQLITE_PATH", str(tmp_path / "poll.db"))
+    monkeypatch.setattr(Config, "TRADES_SQLITE_PATH", str(tmp_path / "trades.db"))
     monkeypatch.setattr(Config, "TELEGRAM_BOT_TOKEN", "123:fake")
     monkeypatch.setattr(Config, "TELEGRAM_CHAT_ID", ADMIN)
     monkeypatch.setattr(Config, "ADMIN_CHAT_IDS", "")
