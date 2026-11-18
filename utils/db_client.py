@@ -19,7 +19,8 @@ STATUS_REJECTED = 'REJECTED'
 STATUS_EXPIRED = 'EXPIRED'
 
 # Stored statuses include EXPIRED (set by the system); DECISIONS is what a reviewer may submit.
-VALID_STATUSES = frozenset({STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED, STATUS_EXPIRED})
+STATUS_INFO = 'INFO'  # stored for the dashboard only; never a decision
+VALID_STATUSES = frozenset({STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED, STATUS_EXPIRED, STATUS_INFO})
 DECISIONS = frozenset({STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED})
 
 
@@ -41,7 +42,8 @@ class DbClient:
 
     def save_alert(self, alert_id, ticker, signal_details, pros_cons, chat_id=None, message_id=None,
                    price=None, strategy='volume', trading_date=None, signal_type='VOLUME_BREAKTHROUGH',
-                   confidence=None, checklist=None, entry=None, stop=None, target=None, messages=None):
+                   confidence=None, checklist=None, entry=None, stop=None, target=None, messages=None,
+                   status=STATUS_PENDING):
         """Saves a new alert to DynamoDB.
 
         Field names here are the contract `types/market.ts` declares. `aiProsCons`
@@ -55,7 +57,7 @@ class DbClient:
             'timestamp': _now_iso(),
             'signalDetails': signal_details,
             'aiProsCons': pros_cons,
-            'status': STATUS_PENDING,
+            'status': status,
             'strategy': strategy,
             'signalType': signal_type,
         }

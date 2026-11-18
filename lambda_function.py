@@ -234,6 +234,8 @@ def lambda_handler(event, context):
             or (a.get("status") in ("EXPIRED", "REJECTED") and _decided_today(a, today))}
 
     def raise_alert(ticker, sig, signal_desc, price):
+        """Store (and, for a request strategy, send) one alert; returns whether it is a buy request."""
+        requestable = sig["strategy"] in settings["requestStrategies"]
         logger.info(f"{sig['strategy']} signal for {ticker}. Running AI analysis...")
 
         # 3. Get detailed context for AI
@@ -253,7 +255,7 @@ def lambda_handler(event, context):
         # Admins always get the alert (with buttons); every active subscriber gets
         # it too. Admins come first so the stored message id is the admin copy.
         message_id, sent = None, []
-        if settings["telegramAlertsEnabled"]:
+        if requestable and settings["telegramAlertsEnabled"]:  # dashboard-only strategies never reach Telegram
             recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + subscribers.active_chat_ids()))
             order_line, keyboard = _request_extras(settings, alert_id, ticker, price, sig.get("stopPrice"))
             message_id, blocked, sent = telegram.broadcast_alert(
@@ -281,17 +283,22 @@ def lambda_handler(event, context):
             stop=sig["stopPrice"],
             target=sig["targetPrice"],
             messages=sent,
+            status="PENDING" if requestable else "INFO",
         )
         seen.add((ticker, sig["strategy"], today))
-        held.add(ticker)
+        if requestable:  # an INFO alert is not an open request, so it never blocks one
+            held.add(ticker)
+        return requestable
     for ticker, issues in _invalid_tickers(today).items():
         logger.info("%s skipped: %s", ticker, "; ".join(issues))
         held.add(ticker)
 
     # 2. Process potential candidates
-    signals_count = 0
+    signals_count = 0  # buy requests raised; MACD stops at the cap
+    raised = 0  # every alert stored this poll, requests and INFO
+    volume_alerts = 0  # the volume loop keeps its own cap, so INFO alerts cannot crowd out requests
     for result in scan_results:
-        if signals_count >= settings["maxCandidatesPerRun"]:
+        if volume_alerts >= settings["maxCandidatesPerRun"] or signals_count >= settings["maxCandidatesPerRun"]:
             break
         ticker = result.get("ticker")
         if not ticker: continue
@@ -303,8 +310,10 @@ def lambda_handler(event, context):
         if (ticker, "volume", today) in seen or ticker in held:
             continue
         sig = volume.evaluate(ticker, bars.get(ticker, []), result, threshold)
-        raise_alert(ticker, sig, f"Volume Breakthrough detected with score {volume_score}", result.get("price"))
-        signals_count += 1
+        signals_count += raise_alert(ticker, sig, f"Volume Breakthrough detected with score {volume_score}",
+                                     result.get("price"))
+        volume_alerts += 1
+        raised += 1
 
     # MACD reads completed bars only, so one full pass per trading day is enough. A pass cut short
     # by the cap, or with no history downloaded, is retried next poll; `seen` stops repeats.
@@ -322,11 +331,11 @@ def lambda_handler(event, context):
                 continue
             sig = macd.evaluate(ticker, tb, scores.get(ticker), threshold)
             if sig:
-                raise_alert(ticker, sig, "MACD crossed up above a rising 200-day average",
-                            prices.get(ticker) or sig["entryPrice"])
-                signals_count += 1
+                signals_count += raise_alert(ticker, sig, "MACD crossed up above a rising 200-day average",
+                                             prices.get(ticker) or sig["entryPrice"])
+                raised += 1
         else:
             _macd_days.add(today)
 
-    logger.info(f"Completed run. Processed {signals_count} signals.")
-    return {"statusCode": 200, "body": f"Processed {signals_count} signals."}
+    logger.info(f"Completed run. Processed {raised} signals ({signals_count} buy requests).")
+    return {"statusCode": 200, "body": f"Processed {raised} signals."}

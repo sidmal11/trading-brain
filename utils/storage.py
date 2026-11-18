@@ -20,7 +20,8 @@ from config import Config
 
 STATUS_PENDING = "PENDING"
 STATUS_EXPIRED = "EXPIRED"
-VALID_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", STATUS_EXPIRED})
+STATUS_INFO = "INFO"  # stored for the dashboard; its strategy sends no buy requests, so it takes no decision
+VALID_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", STATUS_EXPIRED, STATUS_INFO})
 PROMPT_TTL = timedelta(minutes=10)  # a typed Telegram amount counts only this long after "Other amount"
 
 
@@ -50,14 +51,15 @@ class SqliteStore:
 
     def save_alert(self, alert_id, ticker, signal_details, pros_cons, chat_id=None, message_id=None,
                    price=None, strategy="volume", trading_date=None, signal_type="VOLUME_BREAKTHROUGH",
-                   confidence=None, checklist=None, entry=None, stop=None, target=None, messages=None):
+                   confidence=None, checklist=None, entry=None, stop=None, target=None, messages=None,
+                   status=STATUS_PENDING):
         item = {
             "alertId": alert_id,
             "ticker": ticker,
             "timestamp": _now_iso(),
             "signalDetails": signal_details,
             "aiProsCons": pros_cons,
-            "status": STATUS_PENDING,
+            "status": status,
             "strategy": strategy,
             "signalType": signal_type,
         }

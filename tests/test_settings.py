@@ -27,6 +27,7 @@ GOOD = {
     "maxChasePct": 3,
     "riskPerTrade": 50,
     "stopAlertPct": 1,
+    "requestStrategies": ["macd"],
 }
 
 
@@ -184,6 +185,8 @@ def poll_env(monkeypatch, tmp_path):
     monkeypatch.setattr(lambda_function, "_bar_days", set())
     monkeypatch.setattr(lambda_function, "_backtest_days", set())
     monkeypatch.setattr(lambda_function, "_bar_retry_at", 0.0)
+    from utils.settings_store import SettingsStore
+    SettingsStore(Config.SQLITE_PATH).put({"requestStrategies": ["macd", "volume"]})  # the old behaviour
     sent = []
 
     class Resp:
@@ -245,3 +248,12 @@ def test_browser_preflight_allows_put_for_settings(app_env):
 def test_stop_alert_distance_accepts_half_a_percent(app_env):
     assert app_env.put("/api/v1/settings", json={**GOOD, "stopAlertPct": 0.5}).status_code == 200
     assert app_env.get("/api/v1/settings").json()["stopAlertPct"] == 0.5
+
+
+def test_only_macd_sends_requests_by_default():
+    assert defaults()["requestStrategies"] == ["macd"]
+
+
+@pytest.mark.parametrize("value, code", [(["macd", "volume"], 200), ([], 200), (["nope"], 422), (["macd", "macd"], 422)])
+def test_request_strategies_setting(app_env, value, code):
+    assert app_env.put("/api/v1/settings", json={**GOOD, "requestStrategies": value}).status_code == code

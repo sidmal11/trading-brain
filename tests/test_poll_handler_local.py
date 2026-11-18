@@ -93,6 +93,8 @@ def poll(monkeypatch, tmp_path):
     monkeypatch.setattr(lambda_function, "_bar_days", set())
     monkeypatch.setattr(lambda_function, "_backtest_days", set())
     monkeypatch.setattr(lambda_function, "_bar_retry_at", 0.0)
+    from utils.settings_store import SettingsStore
+    SettingsStore(Config.SQLITE_PATH).put({"requestStrategies": ["macd", "volume"]})  # the old behaviour
     http = Telegram()
     monkeypatch.setattr(tc.requests, "post", http)
     http.prices = {}  # the sweep's quotes; a ticker not listed has no price this poll
@@ -197,7 +199,8 @@ def test_deduped_tickers_do_not_use_up_the_run_allowance(poll, monkeypatch):
 
     base = settings_store.defaults()
     monkeypatch.setattr(lambda_function, "effective_settings",
-                        lambda: {**base, "maxCandidatesPerRun": 1, "volumeThreshold": 1.0})
+                        lambda: {**base, "maxCandidatesPerRun": 1, "volumeThreshold": 1.0,
+                                 "requestStrategies": ["macd", "volume"]})
     lambda_function.lambda_handler({}, None)  # alerts NVDA
     monkeypatch.setattr(FakeScan, "get_market_scan_results", lambda self, **k: [
         {"ticker": "NVDA", "volume_score": 9.0, "price": 182.4},
@@ -212,7 +215,8 @@ def _trading(monkeypatch, on, dollars=500):
 
     base = settings_store.defaults()
     monkeypatch.setattr(lambda_function, "effective_settings",
-                        lambda: {**base, "volumeThreshold": 1.0, "tradingEnabled": on, "dollarsPerTrade": dollars})
+                        lambda: {**base, "volumeThreshold": 1.0, "tradingEnabled": on, "dollarsPerTrade": dollars,
+                                 "requestStrategies": ["macd", "volume"]})
 
 
 def _buttons(payload):
@@ -387,7 +391,8 @@ def test_macd_alerts_count_toward_the_run_cap(poll, monkeypatch):
 
     base = settings_store.defaults()
     monkeypatch.setattr(lambda_function, "effective_settings",
-                        lambda: {**base, "maxCandidatesPerRun": 1, "volumeThreshold": 1.0})
+                        lambda: {**base, "maxCandidatesPerRun": 1, "volumeThreshold": 1.0,
+                                 "requestStrategies": ["macd", "volume"]})
     _bars(monkeypatch, {MACD_TICKER: _macd_buy_bars()})
     result = lambda_function.lambda_handler({}, None)
     assert result["body"] == "Processed 1 signals."
@@ -677,3 +682,33 @@ def test_half_day_waits_thirty_minutes(poll, monkeypatch):
     monkeypatch.setattr(lambda_function, "trading_date", lambda: "2026-11-27")  # 13:00 close
     monkeypatch.setattr(lambda_function, "session_fraction", lambda: 20 / 210)  # 20 minutes in
     assert lambda_function.lambda_handler({}, None)["body"] == "Too early in the session; skipping scan."
+
+
+# ---------- volume is dashboard only by default (owner, 2026-11-18) ----------
+
+def test_by_default_a_volume_signal_is_shown_but_not_requested(poll):
+    from utils.settings_store import SettingsStore
+
+    SettingsStore(Config.SQLITE_PATH).put({"requestStrategies": ["macd"]})
+    lambda_function.lambda_handler({}, None)
+    [alert] = [a for a in alert_store().list_alerts() if a["ticker"] == "NVDA"]
+    assert alert["status"] == "INFO" and alert["strategy"] == "volume"
+    assert alert.get("aiProsCons")  # still analysed for the dashboard
+    assert poll.sends() == []  # nothing to Telegram
+
+
+def test_info_alerts_do_not_block_requests_or_use_the_cap(poll, monkeypatch):
+    from utils.settings_store import SettingsStore, defaults
+
+    base = defaults()
+    monkeypatch.setattr(lambda_function, "effective_settings",
+                        lambda: {**base, "volumeThreshold": 1.0, "maxCandidatesPerRun": 1, "requestStrategies": ["macd"]})
+    monkeypatch.setattr(FakeScan, "get_market_scan_results", lambda self, **k: [
+        {"ticker": "NVDA", "volume_score": 9.0, "price": 182.4},
+        {"ticker": "AMD", "volume_score": 5.0, "price": 120.0},
+    ])
+    lambda_function.lambda_handler({}, None)
+    statuses = {a["ticker"]: a["status"] for a in alert_store().list_alerts()}
+    assert statuses == {"NVDA": "INFO"}  # the volume loop keeps its own cap of 1
+    held = [a for a in alert_store().list_alerts() if a["status"] == "PENDING"]
+    assert held == []  # an INFO alert never counts as an open request

@@ -423,3 +423,11 @@ def test_dashboard_cannot_reject_a_bought_request(env):
     r = env.client.post("/api/v1/alerts/a1/review", json={"decision": "REJECTED"})
     assert r.status_code == 409 and r.json()["detail"] == "Already bought. Close the position instead."
     assert env.status() == "APPROVED"
+
+
+def test_an_info_alert_cannot_be_approved_or_rejected(env):
+    env.alerts.save_alert("i1", "MSFT", "Volume 3.4x", "x", trading_date="2026-11-17", status="INFO")
+    for decision in ("APPROVED", "REJECTED", "PENDING"):
+        r = env.client.post("/api/v1/alerts/i1/review", json={"decision": decision})
+        assert r.status_code == 409 and r.json()["detail"] == "Information only: this strategy does not send buy requests."
+    assert env.status("i1") == "INFO" and env.client.get("/api/v1/orders").json() == []

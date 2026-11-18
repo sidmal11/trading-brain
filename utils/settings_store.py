@@ -36,6 +36,8 @@ def defaults() -> dict:
         "maxChasePct": 3,
         "riskPerTrade": 50,
         "stopAlertPct": 1,  # Telegram warning when a held position is this close to its stop
+        # Strategies whose alerts are buy requests; the others are shown on the dashboard only (status INFO).
+        "requestStrategies": ["macd"],  # owner, 2026-11-18: volume lost money over the last 12 months
     }
 
 

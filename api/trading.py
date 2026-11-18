@@ -37,6 +37,7 @@ def live_price(snapshot):
 
 ALREADY_REJECTED = "Already rejected."
 ALREADY_BOUGHT = "Already bought. Close the position instead."
+INFO_ONLY = "Information only: this strategy does not send buy requests."
 
 
 def price_of(ticker):
@@ -93,6 +94,8 @@ def execute_approval(alert, db, shares=None, dollars=None):
         raise TradeRefused(f"Request expired: {alert.get('expiredReason') or 'No longer valid.'}")
     if alert.get("status") == "REJECTED":  # a leftover button or another admin's copy must not undo a rejection
         raise TradeRefused(ALREADY_REJECTED)
+    if alert.get("status") == "INFO":
+        raise TradeRefused(INFO_ONLY)
     settings = effective_settings()
     store = get_trades_store() if settings_store() is not None else None  # the trades file lives only on SQLite
     existing = store.live_buy(alert_id) if store else None
@@ -139,6 +142,8 @@ def execute_approval(alert, db, shares=None, dollars=None):
 
 def reject(alert, db):
     """Record a rejection, unless the alert already has a buy (its position is closed with Close, not relabelled)."""
+    if alert.get("status") == "INFO":
+        raise TradeRefused(INFO_ONLY)
     store = get_trades_store() if settings_store() is not None else None
     if store and store.live_buy(alert["alertId"]):
         raise TradeRefused(ALREADY_BOUGHT)

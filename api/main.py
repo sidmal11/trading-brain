@@ -110,12 +110,20 @@ class SettingsIn(BaseModel):
     maxChasePct: float = Field(ge=0.5, le=20)
     riskPerTrade: float = Field(ge=1, le=5000)
     stopAlertPct: float = Field(ge=0.1, le=20)
+    requestStrategies: List[Literal["macd", "volume"]]
 
     @field_validator("markets")
     @classmethod
     def no_duplicate_markets(cls, value):
         if len(set(value)) != len(value):
             raise ValueError("markets must not repeat")
+        return value
+
+    @field_validator("requestStrategies")
+    @classmethod
+    def no_duplicate_strategies(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("requestStrategies must not repeat")
         return value
 
 
@@ -365,6 +373,8 @@ def review_alert(
     if existing.get("status") == "EXPIRED":  # no decision may reopen or relabel an expired request
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail=f"Request expired: {existing.get('expiredReason') or 'No longer valid.'}")
+    if existing.get("status") == "INFO":  # shown for information; its strategy does not send buy requests
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=trading.INFO_ONLY)
 
     order = None
     try:
@@ -641,7 +651,7 @@ def telegram_webhook(
             recorded = trading.reject(existing, db)
     except trading.TradeRefused as refused:
         telegram.answer_callback_query(cb_id, refused.reason)
-        if refused.reason in (trading.ALREADY_REJECTED, trading.ALREADY_BOUGHT):  # the decision stands
+        if refused.reason in (trading.ALREADY_REJECTED, trading.ALREADY_BOUGHT, trading.INFO_ONLY):  # nothing to retry
             return {"ok": True, "alertId": alert_id, "status": existing.get("status")}
         # Buttons stay: the operator can tap again once the cause is gone.
         telegram.send_text(chat_id, f"{ticker} not bought: {refused.reason}")
