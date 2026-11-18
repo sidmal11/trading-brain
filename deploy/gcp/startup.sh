@@ -68,6 +68,15 @@ if [ ! -f "$TRADES_DB" ]; then
   fi
 fi
 
+echo "==> Swap (the 1 GB VM runs out of memory building the image without it)"
+if [ -z "$(swapon --show --noheadings)" ] && [ ! -e /swapfile ]; then
+  fallocate -l 2G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+fi
+grep -qs '^/swapfile[[:space:]]' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
 echo "==> Containers"
 cd "$APP_DIR"
 docker compose up -d --build
