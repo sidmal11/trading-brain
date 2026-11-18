@@ -279,3 +279,35 @@ def test_uc7_unknown_alert_tap_is_harmless(world):
     r = world["client"].post(WEBHOOK, json=_tap("approve:does-not-exist:NVDA", ADMIN), headers=HEADERS)
     assert r.status_code == 200
     assert r.json().get("ignored") == "unknown alert"
+
+
+# ── Expired requests are final ────────────────────────────────────────────────
+
+def _expired(world):
+    alert_id = _broadcast(world)
+    world["db"].expire_alert(alert_id, "Cleared at upgrade.")
+    return alert_id
+
+
+@pytest.mark.parametrize("decision", ["REJECTED", "PENDING", "APPROVED"])
+def test_dashboard_decision_on_an_expired_alert_is_refused(world, decision):
+    alert_id = _expired(world)
+    before = len(world["http"].calls)
+    r = world["client"].post(f"/api/alerts/{alert_id}/review", json={"decision": decision})
+    assert r.status_code == 409 and r.json()["detail"] == "Request expired: Cleared at upgrade."
+    assert world["db"].get_alert(alert_id)["status"] == "EXPIRED"
+    assert len(world["http"].calls) == before  # no Telegram edit
+
+
+def test_store_refuses_to_change_an_expired_alert(world):
+    alert_id = _expired(world)
+    assert world["db"].update_alert_status(alert_id, "PENDING") is False
+    assert world["db"].get_alert(alert_id)["status"] == "EXPIRED"
+
+
+def test_telegram_reject_tap_on_an_expired_alert_changes_nothing(world):
+    alert_id = _expired(world)
+    world["client"].post(WEBHOOK, json=_tap(f"reject:{alert_id}:NVDA", ADMIN), headers=HEADERS)
+    assert world["db"].get_alert(alert_id)["status"] == "EXPIRED"
+    answers = [p for m, p in world["http"].calls if m == "answerCallbackQuery"]
+    assert answers and answers[-1]["text"] == "Request expired: Cleared at upgrade."

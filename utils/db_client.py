@@ -162,9 +162,11 @@ class DbClient:
             self.table.update_item(
                 Key={'alertId': alert_id},
                 UpdateExpression='SET #s = :status, reviewedAt = :reviewed_at',
+                ConditionExpression='attribute_not_exists(#s) OR #s <> :expired',  # expired is final
                 ExpressionAttributeValues={
                     ':status': status,
                     ':reviewed_at': _now_iso(),
+                    ':expired': STATUS_EXPIRED,
                 },
                 ExpressionAttributeNames={'#s': 'status'}
             )

@@ -342,6 +342,9 @@ def review_alert(
     existing = db.get_alert(alert_id)
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown alert id.")
+    if existing.get("status") == "EXPIRED":  # no decision may reopen or relabel an expired request
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"Request expired: {existing.get('expiredReason') or 'No longer valid.'}")
 
     order = None
     try:
@@ -527,6 +530,10 @@ def telegram_webhook(
         return {"ok": True, "ignored": "unknown alert"}
 
     cb_id = callback.get("id", "")
+    if existing.get("status") == "EXPIRED":
+        telegram.answer_callback_query(
+            cb_id, f"Request expired: {existing.get('expiredReason') or 'No longer valid.'}")
+        return {"ok": True, "alertId": alert_id, "status": "EXPIRED"}
     tapped = callback.get("message") or {}
     chat_id = (tapped.get("chat") or {}).get("id") or tapper
     answer = f"{ticker}: {decision.title()}"

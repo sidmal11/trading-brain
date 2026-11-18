@@ -101,6 +101,8 @@ class SqliteStore:
             if row is None:
                 return False
             item = json.loads(row[0])
+            if item.get("status") == STATUS_EXPIRED:
+                return False  # an expired request is final
             item["status"] = status
             item["reviewedAt"] = _now_iso()
             conn.execute("UPDATE alerts SET doc = ? WHERE alert_id = ?", (json.dumps(item), alert_id))
