@@ -46,7 +46,7 @@ class SqliteStore:
 
     def save_alert(self, alert_id, ticker, signal_details, pros_cons, chat_id=None, message_id=None,
                    price=None, strategy="volume", trading_date=None, signal_type="VOLUME_BREAKTHROUGH",
-                   confidence=None, checklist=None, entry=None, stop=None, target=None):
+                   confidence=None, checklist=None, entry=None, stop=None, target=None, messages=None):
         item = {
             "alertId": alert_id,
             "ticker": ticker,
@@ -68,6 +68,8 @@ class SqliteStore:
             item["telegramChatId"] = chat_id
         if message_id:
             item["telegramMessageId"] = message_id
+        if messages:
+            item["telegramMessages"] = messages
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO alerts (alert_id, doc) VALUES (?, ?)",

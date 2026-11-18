@@ -100,7 +100,7 @@ def test_admin_message_id_is_returned_for_storage(client_for_broadcast, monkeypa
     post = RecordingPost()
     monkeypatch.setattr(client_for_broadcast, "_post", post)
 
-    message_id, _ = client_for_broadcast.broadcast_alert("NVDA", "vol", "analysis", "alert-1", ["1", "555"])
+    message_id, _, _ = client_for_broadcast.broadcast_alert("NVDA", "vol", "analysis", "alert-1", ["1", "555"])
 
     assert message_id == 1001  # the first send, to the admin chat
 
@@ -109,7 +109,7 @@ def test_a_blocked_subscriber_is_reported_not_retried(client_for_broadcast, monk
     post = RecordingPost(status_by_chat={"555": 403})
     monkeypatch.setattr(client_for_broadcast, "_post", post)
 
-    message_id, blocked = client_for_broadcast.broadcast_alert("NVDA", "vol", "analysis", "alert-1", ["1", "555"])
+    message_id, blocked, _ = client_for_broadcast.broadcast_alert("NVDA", "vol", "analysis", "alert-1", ["1", "555"])
 
     assert blocked == ["555"]
     assert message_id == 1001  # one blocked subscriber does not lose the admin copy
@@ -119,7 +119,7 @@ def test_other_errors_are_not_reported_as_blocked(client_for_broadcast, monkeypa
     post = RecordingPost(status_by_chat={"555": 500})
     monkeypatch.setattr(client_for_broadcast, "_post", post)
 
-    _, blocked = client_for_broadcast.broadcast_alert("NVDA", "vol", "analysis", "alert-1", ["1", "555"])
+    _, blocked, _ = client_for_broadcast.broadcast_alert("NVDA", "vol", "analysis", "alert-1", ["1", "555"])
 
     # A 500 is not the user's doing, so their subscription must not be dropped.
     assert blocked == []

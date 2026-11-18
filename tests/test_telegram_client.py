@@ -141,3 +141,53 @@ def test_order_line_survives_a_long_analysis(monkeypatch):
     text = client._alert_payload("c", "AAPL", "sig", "x" * 5000, "a1", line)["text"]
     assert len(text) <= MAX_MESSAGE_CHARS
     assert text.endswith(line) and "(analysis truncated)" in text
+
+
+# ── Expiry clean-up ───────────────────────────────────────────────────────────
+
+def _ago(hours):
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+def _recording_client(monkeypatch, ok=True):
+    client = TelegramClient(token="t", chat_id="1")
+    calls = []
+    monkeypatch.setattr(client, "_post", lambda m, p: calls.append((m, p)) or {"ok": ok})
+    return client, calls
+
+
+def test_delete_message_reports_success(monkeypatch):
+    client, calls = _recording_client(monkeypatch)
+    assert client.delete_message("1", 5) is True
+    assert calls == [("deleteMessage", {"chat_id": "1", "message_id": 5})]
+
+
+def test_recent_copy_is_deleted(monkeypatch):
+    client, calls = _recording_client(monkeypatch)
+    client.expire_message("2000", 7, _ago(2), "NVDA request expired: x")
+    assert [m for m, _ in calls] == ["deleteMessage"]
+
+
+def test_copy_older_than_48_hours_is_edited_to_the_reason_without_buttons(monkeypatch):
+    client, calls = _recording_client(monkeypatch)
+    client.expire_message("2000", 7, _ago(50), "NVDA request expired: x")
+    assert calls == [("editMessageText", {"chat_id": "2000", "message_id": 7, "text": "NVDA request expired: x"})]
+
+
+def test_failed_delete_falls_back_to_an_edit(monkeypatch):
+    client, calls = _recording_client(monkeypatch, ok=False)
+    client.expire_message("2000", 7, _ago(47.99), "r")
+    assert [m for m, _ in calls] == ["deleteMessage", "editMessageText"]
+
+
+def test_broadcast_returns_every_recipient_message(monkeypatch):
+    monkeypatch.setattr(Config, "ADMIN_CHAT_IDS", "")
+    client = TelegramClient(token="t", chat_id="1")
+    ids = iter([11, 12])
+    monkeypatch.setattr(client, "_post", lambda m, p: {"ok": True, "result": {"message_id": next(ids)}})
+    admin_id, blocked, sent = client.broadcast_alert("NVDA", "vol", "a", "alert-1", ["1", "555"])
+    assert admin_id == 11 and blocked == []
+    assert [(s["chatId"], s["messageId"]) for s in sent] == [("1", 11), ("555", 12)]
+    assert all(s["sentAt"].endswith("+00:00") for s in sent)

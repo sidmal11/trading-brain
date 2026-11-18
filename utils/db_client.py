@@ -41,7 +41,7 @@ class DbClient:
 
     def save_alert(self, alert_id, ticker, signal_details, pros_cons, chat_id=None, message_id=None,
                    price=None, strategy='volume', trading_date=None, signal_type='VOLUME_BREAKTHROUGH',
-                   confidence=None, checklist=None, entry=None, stop=None, target=None):
+                   confidence=None, checklist=None, entry=None, stop=None, target=None, messages=None):
         """Saves a new alert to DynamoDB.
 
         Field names here are the contract `types/market.ts` declares. `aiProsCons`
@@ -68,6 +68,7 @@ class DbClient:
         if price is not None: item['priceAtAlert'] = Decimal(str(price))
         if chat_id: item['telegramChatId'] = chat_id
         if message_id: item['telegramMessageId'] = message_id
+        if messages: item['telegramMessages'] = messages  # ids are ints and the rest strings: no Decimal needed
 
         try:
             self.table.put_item(Item=item)

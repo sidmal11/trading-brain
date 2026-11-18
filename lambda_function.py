@@ -7,7 +7,10 @@ from utils.storage import alert_store, subscriber_store
 from utils.settings_store import MARKET_US_STOCKS, effective_settings
 from config import Config
 from utils.broker import whole_shares
-from utils.market_clock import MIN_SESSION_FRACTION, session_fraction, trading_date
+from utils.market_clock import MARKET_TZ, MIN_SESSION_FRACTION, session_fraction, trading_date
+from datetime import datetime, timezone
+from api.trading import price_of
+from api.validity import invalid_reason
 from utils.api_client import UNIVERSE
 from strategies import macd, strategy_notes, volume
 from strategies.history import completed_bars
@@ -28,6 +31,53 @@ def _order_line(settings, ticker, price):
         return f"Approve will not buy: ${dollars} is below one share at ${price:.2f} (MOCK)."
     return f"Approve buys {q} {ticker} at about ${price:.2f}, about ${q * price:,.0f} (MOCK)."
 
+def _telegram_copies(alert):
+    """Every recipient's copy; alerts saved before per-recipient ids fall back to the admin copy."""
+    if alert.get("telegramMessages"):
+        return alert["telegramMessages"]
+    if alert.get("telegramMessageId") and alert.get("telegramChatId"):
+        return [{"chatId": alert["telegramChatId"], "messageId": alert["telegramMessageId"],
+                 "sentAt": alert.get("timestamp")}]
+    return []
+
+
+def expire_sweep(db, telegram, settings, price_of, alerts=None):
+    """Expire every PENDING request that is no longer valid at its current price; returns how many.
+
+    Runs at any hour. Each expired request leaves every Telegram copy and admins get a note.
+    `alerts` is the poll's single alert read; expired rows are updated in place so the gates see them.
+    """
+    expired = 0
+    for alert in alerts if alerts is not None else db.list_alerts(limit=10**9):
+        if alert.get("status") != "PENDING":
+            continue
+        price = price_of(alert["ticker"])  # None skips this request until the next poll
+        reason = invalid_reason({k: float(alert[k]) for k in ("stopPrice", "priceAtAlert") if alert.get(k) is not None},
+                                price, settings)
+        if not reason or not db.expire_alert(alert["alertId"], reason):
+            continue
+        alert.update(status="EXPIRED", expiredReason=reason, expiredAt=datetime.now(timezone.utc).isoformat())
+        expired += 1
+        if not telegram.is_configured:
+            continue
+        note = f"{alert['ticker']} request expired: {reason}"
+        for copy in _telegram_copies(alert):
+            telegram.expire_message(copy["chatId"], int(copy["messageId"]), copy.get("sentAt"), note)
+        for chat_id in sorted(telegram.admin_chat_ids):
+            telegram.send_text(chat_id, note)
+    return expired
+
+
+def _decided_today(alert, today):
+    """An EXPIRED or REJECTED request decided on today's US Eastern date."""
+    stamp = alert.get("expiredAt") if alert.get("status") == "EXPIRED" else alert.get("reviewedAt")
+    try:
+        day = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(MARKET_TZ).date().isoformat()
+    except (AttributeError, ValueError):
+        day = alert.get("tradingDate")
+    return day == today
+
+
 def lambda_handler(event, context):
     """Main orchestration function for the Trading Brain."""
     api = ApiClient()
@@ -40,6 +90,10 @@ def lambda_handler(event, context):
     if MARKET_US_STOCKS not in settings["markets"]:
         logger.info("US stocks are not enabled in settings; skipping scan.")
         return {"statusCode": 200, "body": "US stocks disabled in settings."}
+
+    # shortcut: on DynamoDB list_alerts is one scan page (about 1 MB), fine at a few alerts a day.
+    alerts = db.list_alerts(limit=10**9)
+    expire_sweep(db, telegram, settings, price_of, alerts)
 
     fraction = session_fraction()
     if fraction is None:
@@ -60,8 +114,10 @@ def lambda_handler(event, context):
 
     bars = completed_bars(UNIVERSE, today)
     threshold = settings["volumeThreshold"]
-    # shortcut: on DynamoDB list_alerts is one scan page (about 1 MB), fine at a few alerts a day.
-    seen = {(a.get("ticker"), a.get("strategy"), a.get("tradingDate")) for a in db.list_alerts(limit=10**9)}
+    seen = {(a.get("ticker"), a.get("strategy"), a.get("tradingDate")) for a in alerts}
+    # Cooldown: no new alert while one is PENDING, nor on the day one was expired or rejected.
+    held = {a.get("ticker") for a in alerts if a.get("status") == "PENDING"
+            or (a.get("status") in ("EXPIRED", "REJECTED") and _decided_today(a, today))}
 
     def raise_alert(ticker, sig, signal_desc, price):
         logger.info(f"{sig['strategy']} signal for {ticker}. Running AI analysis...")
@@ -82,10 +138,10 @@ def lambda_handler(event, context):
         alert_id = str(uuid.uuid4())
         # Admins always get the alert (with buttons); every active subscriber gets
         # it too. Admins come first so the stored message id is the admin copy.
-        message_id = None
+        message_id, sent = None, []
         if settings["telegramAlertsEnabled"]:
             recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + subscribers.active_chat_ids()))
-            message_id, blocked = telegram.broadcast_alert(
+            message_id, blocked, sent = telegram.broadcast_alert(
                 ticker, conditions, analysis, alert_id, recipients, _order_line(settings, ticker, price)
             )
             for chat_id in blocked:
@@ -109,8 +165,10 @@ def lambda_handler(event, context):
             entry=sig["entryPrice"],
             stop=sig["stopPrice"],
             target=sig["targetPrice"],
+            messages=sent,
         )
         seen.add((ticker, sig["strategy"], today))
+        held.add(ticker)
 
     # 2. Process potential candidates
     signals_count = 0
@@ -124,7 +182,7 @@ def lambda_handler(event, context):
         if volume_score < threshold:
             continue
         # One alert per ticker per trading day; checked before any details or LLM call.
-        if (ticker, "volume", today) in seen:
+        if (ticker, "volume", today) in seen or ticker in held:
             continue
         sig = volume.evaluate(ticker, bars.get(ticker, []), result, threshold)
         raise_alert(ticker, sig, f"Volume Breakthrough detected with score {volume_score}", result.get("price"))
@@ -138,6 +196,8 @@ def lambda_handler(event, context):
         for ticker in UNIVERSE:
             if signals_count >= settings["maxCandidatesPerRun"]:
                 break
+            if ticker in held:
+                continue
             tb = bars.get(ticker, [])
             # A cross stays "in the last 3 bars" for 3 days: skip if an alert was raised on any of them.
             if any((ticker, "macd", d) in seen for d in [today] + [b[0] for b in tb[-2:]]):

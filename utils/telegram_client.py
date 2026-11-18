@@ -12,6 +12,7 @@ read API's webhook route hands to `DbClient.update_alert_status`.
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 from html import escape
 
 import requests
@@ -185,26 +186,49 @@ class TelegramClient:
     def broadcast_alert(self, ticker, signal_details, analysis, alert_id, chat_ids, order_line=None):
         """Send one alert to every subscriber.
 
-        Returns `(admin_message_id, blocked)`. `admin_message_id` is the id of the
-        first admin copy, the one that carries buttons and is stored on the alert.
+        Returns `(admin_message_id, blocked, sent)`. `admin_message_id` is the id of
+        the first admin copy, the one that carries buttons and is stored on the alert.
         `blocked` lists the chats that returned 403 (the user blocked the bot), so
-        the caller can stop sending to them.
+        the caller can stop sending to them. `sent` is every delivered copy as
+        `{"chatId", "messageId", "sentAt"}`, so an expired request can be cleaned out.
         """
         if not self.is_configured:
             logger.warning("Telegram not configured; skipping broadcast for %s", ticker)
-            return None, []
+            return None, [], []
 
         admin_message_id = None
         blocked = []
+        sent = []
         for chat_id in chat_ids:
             payload = self._alert_payload(chat_id, ticker, signal_details, analysis, alert_id, order_line)
             data = self._post("sendMessage", payload)
             if data and data.get("ok"):
+                message_id = data.get("result", {}).get("message_id")
+                sent.append({"chatId": str(chat_id), "messageId": message_id,
+                             "sentAt": datetime.now(timezone.utc).isoformat()})
                 if str(chat_id) in self.admin_chat_ids and admin_message_id is None:
-                    admin_message_id = data.get("result", {}).get("message_id")
+                    admin_message_id = message_id
             elif data and data.get("status") == 403:
                 blocked.append(str(chat_id))
-        return admin_message_id, blocked
+        return admin_message_id, blocked, sent
+
+    def delete_message(self, chat_id, message_id) -> bool:
+        data = self._post("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+        return bool(data and data.get("ok"))
+
+    def expire_message(self, chat_id, message_id, sent_at, reason):
+        """Take an expired request out of a chat.
+
+        Telegram deletes only messages under 48 hours old; an older one (or a refused
+        delete) is edited to the reason, and an edit without reply_markup drops the buttons.
+        """
+        try:
+            recent = datetime.now(timezone.utc) - datetime.fromisoformat(sent_at.replace("Z", "+00:00")) < timedelta(hours=48)
+        except (AttributeError, ValueError):
+            recent = False
+        if recent and self.delete_message(chat_id, message_id):
+            return
+        self._post("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": reason})
 
     def send_text(self, chat_id, text: str):
         """Plain reply to a chat, used for subscribe and unsubscribe confirmations."""

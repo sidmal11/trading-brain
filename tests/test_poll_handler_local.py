@@ -90,6 +90,8 @@ def poll(monkeypatch, tmp_path):
     monkeypatch.setattr(FakeLlm, "calls", [])
     http = Telegram()
     monkeypatch.setattr(tc.requests, "post", http)
+    http.prices = {}  # the sweep's quotes; a ticker not listed has no price this poll
+    monkeypatch.setattr(lambda_function, "price_of", http.prices.get)
 
     subscriber_store().subscribe(SUB)
     return http
@@ -141,11 +143,11 @@ def test_second_poll_same_day_does_not_alert_again(poll):
     assert len(alert_store().list_alerts()) == 1
 
 
-def test_next_trading_day_alerts_again(poll, monkeypatch):
+def test_pending_ticker_gets_no_new_alert_on_a_later_day(poll, monkeypatch):
     lambda_function.lambda_handler({}, None)
     monkeypatch.setattr(lambda_function, "trading_date", lambda: "2026-11-17")
     lambda_function.lambda_handler({}, None)
-    assert len(alert_store().list_alerts()) == 2
+    assert len(alert_store().list_alerts()) == 1
 
 
 def test_already_alerted_ticker_does_not_call_the_llm(poll, monkeypatch):
@@ -279,7 +281,16 @@ def test_macd_buy_raises_one_macd_alert(poll, monkeypatch):
     assert volume_item["detail"] == "No volume reading"  # not in this poll's scan
 
 
+def _approved_volume_alert(ticker="NVDA"):
+    """A decided volume alert today: blocks a second volume alert but not a MACD one."""
+    db = alert_store()
+    db.save_alert(alert_id="seed", ticker=ticker, signal_details="v", pros_cons="p",
+                  strategy="volume", trading_date="2026-11-16")
+    db.update_alert_status("seed", "APPROVED")
+
+
 def test_macd_alert_uses_the_scan_volume_score(poll, monkeypatch):
+    _approved_volume_alert()
     _bars(monkeypatch, {"NVDA": _macd_buy_bars()})
     lambda_function.lambda_handler({}, None)
     a = _by_strategy("macd")[0]
@@ -288,6 +299,7 @@ def test_macd_alert_uses_the_scan_volume_score(poll, monkeypatch):
 
 
 def test_macd_alert_price_is_the_scan_live_price_when_available(poll, monkeypatch):
+    _approved_volume_alert()
     bars = _macd_buy_bars()
     _bars(monkeypatch, {"NVDA": bars})
     lambda_function.lambda_handler({}, None)
@@ -408,3 +420,106 @@ def test_llm_prompt_lists_checklist_and_notes():
     assert "Strategy notes:\n# Rules" in prompt
     llm.analyze_stock("AAPL", "sig", {})
     assert "Strategy notes" not in sent["messages"][-1]["content"]
+
+
+# ---------- expiry sweep and new-alert gates ----------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from utils.market_clock import trading_date as real_trading_date  # noqa: E402
+
+EXPIRED_TEXT = "NVDA request expired: Price ran more than 3% above the alert price $182.40."
+
+
+def _ago(hours):
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+def _pending(messages=None, legacy_message_id=None, **extra):
+    db = alert_store()
+    db.save_alert(alert_id="a1", ticker="NVDA", signal_details="v", pros_cons="p", price=182.4,
+                  strategy="volume", trading_date="2026-11-13", chat_id=ADMIN,
+                  message_id=legacy_message_id, messages=messages, **extra)
+
+
+def _methods(poll, method):
+    return [p for m, p in poll.calls if m == method]
+
+
+def test_poll_stores_every_recipient_message(poll):
+    lambda_function.lambda_handler({}, None)
+    alert = alert_store().list_alerts()[0]
+    assert sorted(m["chatId"] for m in alert["telegramMessages"]) == [ADMIN, SUB]
+    assert all(m["messageId"] and m["sentAt"] for m in alert["telegramMessages"])
+
+
+def test_off_hours_poll_expires_an_invalid_request_and_raises_nothing(poll, monkeypatch):
+    lambda_function.lambda_handler({}, None)  # NVDA alert at $182.40, copies to admin and subscriber
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: None)
+
+    def boom(self, *a, **k):
+        raise AssertionError("scan ran while the market was closed")
+
+    monkeypatch.setattr(FakeScan, "get_market_scan_results", boom)
+    poll.prices["NVDA"] = 190.0  # more than 3% above
+    poll.calls.clear()
+    result = lambda_function.lambda_handler({}, None)
+
+    assert result["body"] == "Market closed; skipping scan."
+    alert = alert_store().list_alerts()[0]
+    assert alert["status"] == "EXPIRED"
+    assert sorted(str(p["chat_id"]) for p in _methods(poll, "deleteMessage")) == [ADMIN, SUB]
+    notes = poll.sends()
+    assert [(str(p["chat_id"]), p["text"]) for p in notes] == [(ADMIN, EXPIRED_TEXT)]  # admins only
+
+
+def test_old_copies_are_edited_and_recent_ones_deleted(poll, monkeypatch):
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: None)
+    _pending(messages=[{"chatId": ADMIN, "messageId": 7, "sentAt": _ago(50)},
+                       {"chatId": SUB, "messageId": 8, "sentAt": _ago(2)}])
+    poll.prices["NVDA"] = 190.0
+    lambda_function.lambda_handler({}, None)
+    edits = _methods(poll, "editMessageText")
+    assert edits == [{"chat_id": ADMIN, "message_id": 7, "text": EXPIRED_TEXT}]
+    assert "reply_markup" not in edits[0]
+    assert _methods(poll, "deleteMessage") == [{"chat_id": SUB, "message_id": 8}]
+
+
+def test_alert_without_stored_copies_falls_back_to_the_admin_copy(poll, monkeypatch):
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: None)
+    _pending(legacy_message_id="99")
+    poll.prices["NVDA"] = 190.0
+    lambda_function.lambda_handler({}, None)
+    assert _methods(poll, "deleteMessage") == [{"chat_id": ADMIN, "message_id": 99}]
+
+
+def test_a_valid_or_unpriced_request_is_left_alone(poll, monkeypatch):
+    monkeypatch.setattr(lambda_function, "session_fraction", lambda: None)
+    _pending(messages=[{"chatId": ADMIN, "messageId": 7, "sentAt": _ago(1)}])
+    lambda_function.lambda_handler({}, None)  # no price for NVDA
+    poll.prices["NVDA"] = 183.0  # within 3%
+    lambda_function.lambda_handler({}, None)
+    assert alert_store().get_alert("a1")["status"] == "PENDING"
+    assert poll.calls == []
+
+
+def test_request_expired_in_session_is_not_raised_again_that_day(poll):
+    lambda_function.lambda_handler({}, None)
+    poll.prices["NVDA"] = 190.0
+    lambda_function.lambda_handler({}, None)
+    alerts = alert_store().list_alerts()
+    assert [a["status"] for a in alerts] == ["EXPIRED"]
+
+
+def test_ticker_rejected_today_is_skipped_and_allowed_next_day(poll, monkeypatch):
+    today = real_trading_date()  # reviewedAt is stamped by the real clock
+    monkeypatch.setattr(lambda_function, "trading_date", lambda: today)
+    lambda_function.lambda_handler({}, None)
+    db = alert_store()
+    db.update_alert_status(db.list_alerts()[0]["alertId"], "REJECTED")
+    lambda_function.lambda_handler({}, None)
+    assert len(db.list_alerts()) == 1
+    tomorrow = (datetime.fromisoformat(today) + timedelta(days=1)).date().isoformat()
+    monkeypatch.setattr(lambda_function, "trading_date", lambda: tomorrow)
+    lambda_function.lambda_handler({}, None)
+    assert len(db.list_alerts()) == 2

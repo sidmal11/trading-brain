@@ -115,7 +115,7 @@ def _broadcast(world, ticker="NVDA"):
     """What the poll Lambda does for one signal: alert everyone, persist the alert."""
     alert_id = str(uuid.uuid4())
     recipients = list(dict.fromkeys(sorted(tc.TelegramClient().admin_chat_ids) + world["subs"].active_chat_ids()))
-    message_id, blocked = tc.TelegramClient().broadcast_alert(ticker, "vol surge", "pros/cons", alert_id, recipients)
+    message_id, blocked, _ = tc.TelegramClient().broadcast_alert(ticker, "vol surge", "pros/cons", alert_id, recipients)
     for chat in blocked:
         world["subs"].deactivate(chat)
     world["db"].save_alert(alert_id=alert_id, ticker=ticker, signal_details="vol surge",
