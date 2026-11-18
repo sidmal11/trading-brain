@@ -327,6 +327,39 @@ def get_indicators(ticker: str = Path(..., pattern=r"^[A-Za-z0-9.\-]{1,10}$")):
     return {"ticker": ticker, **latest(bars)}
 
 
+@router.get("/features/{ticker}")
+def get_features(ticker: str = Path(..., pattern=r"^[A-Za-z0-9.\-]{1,10}$")):
+    """The ticker's features: the daily pass's snapshot when there is one, else computed from stored bars."""
+    ticker = ticker.upper()
+    if Config.STORAGE_BACKEND == "sqlite":
+        from features.build import FeatureStore, build_features
+        from features.relative_strength import SECTOR_ETF
+        from market_data.bar_store import BarStore
+        from strategies.history import HISTORY_BARS
+
+        stored = FeatureStore(Config.SQLITE_PATH).latest(ticker)
+        if stored:
+            return {**stored, "ticker": ticker, "source": "snapshot"}
+        etf = SECTOR_ETF.get(ticker)
+        bars = BarStore(Config.SQLITE_PATH).daily([ticker, "SPY"] + ([etf] if etf else []), before=trading_date())
+        if bars.get(ticker):
+            features = build_features(bars[ticker][-HISTORY_BARS:], bars.get("SPY"), bars.get(etf) if etf else None, etf)
+            return {**features, "ticker": ticker, "source": "computed"}
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No stored daily bars for {ticker}.")
+
+
+@router.get("/regime")
+def get_regime():
+    """Market regime from SPY's stored completed bars; every field None when there are none."""
+    from features.regime import regime
+
+    if Config.STORAGE_BACKEND != "sqlite":
+        return regime([])
+    from market_data.bar_store import BarStore
+
+    return regime(BarStore(Config.SQLITE_PATH).daily(["SPY"], before=trading_date()).get("SPY", []))
+
+
 @router.get("/health-status")
 def get_health_status():
     """For the dashboard's health line: last poll, AI state, data quality. Off SQLite there is no record."""

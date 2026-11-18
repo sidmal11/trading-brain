@@ -21,6 +21,9 @@ from outcomes.update import outcome_rows
 from market_data.earnings import EarningsStore, download_earnings, earnings_note
 from utils.health import HealthStore
 from utils.llm_client import FAILED_TEXT
+from features.build import FeatureStore, build_features
+from features.relative_strength import SECTOR_ETF
+from strategies.history import HISTORY_BARS
 import time
 from datetime import date
 from market_data.calendar import is_trading_day, previous_trading_day, session_minutes
@@ -62,6 +65,20 @@ def _refresh_bars(today, alerts):
         EarningsStore(Config.SQLITE_PATH).save(download_earnings(UNIVERSE, date.fromisoformat(today)))
     except Exception:
         logger.exception("Earnings refresh failed")
+    try:
+        _store_features(store, today)
+    except Exception:
+        logger.exception("Feature snapshots failed")
+
+
+def _store_features(bar_store, today):
+    """After the bar refresh: one feature snapshot per universe ticker for its newest completed bar."""
+    bars = bar_store.daily(UNIVERSE + REFERENCE, before=today)
+    spy, features = bars.get("SPY", []), FeatureStore(Config.SQLITE_PATH)
+    for ticker in UNIVERSE:
+        if bars.get(ticker):
+            etf = SECTOR_ETF.get(ticker)
+            features.save(ticker, build_features(bars[ticker][-HISTORY_BARS:], spy, bars.get(etf) if etf else None, etf))
 
 
 def _record_ai(analysis):

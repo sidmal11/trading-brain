@@ -558,3 +558,29 @@ def test_indicators_route_reports_warm_up_on_short_history(client, sqlite_api):
 def test_indicators_route_404_and_bad_ticker(client, sqlite_api):
     assert client.get("/api/v1/indicators/ZZZZ").status_code == 404
     assert client.get("/api/v1/indicators/bad%20ticker!").status_code == 422
+
+
+
+# ── R4: features and regime ───────────────────────────────────────────────────
+
+def test_features_route_computes_on_demand_then_reads_the_snapshot(client, sqlite_api):
+    from features.build import FeatureStore
+    from market_data.bar_store import BarStore
+    from tests.test_features import walk
+
+    BarStore(sqlite_api).upsert("AAPL", walk(300))
+    body = client.get("/api/v1/features/aapl").json()
+    assert body["ticker"] == "AAPL" and body["source"] == "computed" and body["trend"]["priceVsSma200Pct"] is not None
+    FeatureStore(sqlite_api).save("AAPL", {**body, "source": None})
+    assert client.get("/api/v1/features/AAPL").json()["source"] == "snapshot"
+    assert client.get("/api/v1/features/ZZZZ").status_code == 404
+
+
+def test_regime_route(client, sqlite_api):
+    from market_data.bar_store import BarStore
+    from tests.test_features import bars_from
+
+    assert client.get("/api/v1/regime").json()["trend"] is None  # no SPY bars yet: unknown, not guessed
+    BarStore(sqlite_api).upsert("SPY", bars_from([100 * 1.002 ** i for i in range(300)], spread=0.3))
+    body = client.get("/api/v1/regime").json()
+    assert body["trend"] == "bull" and body["inputs"]["sma200"]

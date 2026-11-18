@@ -761,3 +761,16 @@ def test_poll_records_its_run_and_the_ai_state(poll, monkeypatch):
         {"ticker": "AAPL", "volume_score": 5.0, "price": 180.0}])
     lambda_function.lambda_handler({}, None)
     assert first and HealthStore(Config.SQLITE_PATH).get_all()["aiFailingSince"] == first  # kept from the first failure
+
+
+# ---------- R4: feature snapshots ----------
+
+def test_bar_refresh_stores_feature_snapshots(poll):
+    from features.build import FeatureStore
+    from market_data.bar_store import BarStore
+    from tests.test_features import walk
+
+    BarStore(Config.SQLITE_PATH).upsert("NVDA", [b._replace(date=b.date) for b in walk(300) if b.date < "2026-11-16"])
+    lambda_function.lambda_handler({}, None)
+    snap = FeatureStore(Config.SQLITE_PATH).latest("NVDA")
+    assert snap and snap["relativeStrength"]["sectorEtf"] == "SMH" and snap["version"] == "1"
