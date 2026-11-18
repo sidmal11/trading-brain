@@ -66,8 +66,8 @@ def _answers(http):
 
 def test_tap_approve_buys_and_replies(tg):
     assert tg.tap().status_code == 200
-    assert "Bought 2 AAPL at $182.40 (MOCK)." in tg.http.texts()
-    assert _answers(tg.http) == ["Bought 2 AAPL (MOCK)"]
+    assert "Bought 2.741228 AAPL at $182.40 (MOCK)." in tg.http.texts()  # the suggested quantity
+    assert _answers(tg.http) == ["Bought 2.741228 AAPL (MOCK)"]
     assert "editMessageReplyMarkup" in tg.http.methods()
     orders = tg.client.get("/api/orders").json()
     assert [o["status"] for o in orders] == ["FILLED"]
@@ -83,10 +83,10 @@ def test_tap_then_dashboard_approve_places_one_order(tg):
 
 
 def test_refused_tap_replies_with_reason_and_keeps_buttons(tg):
-    tg.open = None
+    tg.price = None
     assert tg.tap().status_code == 200
-    assert tg.http.texts() == ["AAPL not bought: Market is closed."]
-    assert _answers(tg.http) == ["Market is closed."]
+    assert tg.http.texts() == ["AAPL not bought: Price unavailable."]
+    assert _answers(tg.http) == ["Price unavailable."]
     assert "editMessageReplyMarkup" not in tg.http.methods()
     assert tg.status() == "PENDING"
 

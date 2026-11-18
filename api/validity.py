@@ -15,7 +15,7 @@ def invalid_reason(alert: dict, price: float | None, settings: dict) -> str | No
         return f"Price fell to the stop ${stop:.2f}."
     at = alert.get("priceAtAlert")
     pct = settings["maxChasePct"]
-    if at is not None and price >= at * (1 + pct / 100):
+    if at is not None and at > 0 and price >= at * (1 + pct / 100):  # a zero alert price would expire everything
         return f"Price ran more than {pct:g}% above the alert price ${at:.2f}."
     return None
 

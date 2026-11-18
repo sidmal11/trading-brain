@@ -18,6 +18,8 @@ import re
 import time
 from datetime import datetime, timezone
 
+from utils.market_clock import session_fraction
+
 logger = logging.getLogger(__name__)
 
 # `yfinance` is heavy and only needed when a request actually touches market
@@ -261,7 +263,17 @@ def _fetch_quote(symbol):
         # it would take down the whole signals response.
         "volumeSurgeRatio": round(volume / average_volume, 2) if average_volume else 0.0,
         "history": _history_rows(ticker_obj, period="1d", interval="5m"),
+        "extendedPrice": _extended_price(info),
     }
+
+
+def _extended_price(info):
+    """The newer of Yahoo's pre- and post-market prices while the regular session is closed, else None."""
+    if session_fraction() is not None:
+        return None
+    quotes = [(info.get(f"{side}MarketTime") or 0, info[f"{side}MarketPrice"])
+              for side in ("pre", "post") if info.get(f"{side}MarketPrice")]
+    return round(float(max(quotes)[1]), 2) if quotes else None
 
 
 def _fetch_index(symbol):

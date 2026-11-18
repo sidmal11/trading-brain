@@ -121,3 +121,34 @@ def test_regular_hours_boundaries_are_inclusive_at_the_open():
     assert market_status(datetime(2026, 11, 16, 14, 30, tzinfo=timezone.utc)) == "REGULAR_HOURS"
     # 21:00 UTC is the close, so it belongs to post-market, not regular hours.
     assert market_status(datetime(2026, 11, 16, 21, 0, tzinfo=timezone.utc)) == "POST_MARKET"
+
+
+# -- Extended-hours price ------------------------------------------------------
+
+class _FakeTicker:
+    def __init__(self, info):
+        self.info = info
+
+    def history(self, **kwargs):
+        return None
+
+
+@pytest.mark.parametrize("session, info, expected", [
+    (None, {"preMarketPrice": 151.0, "preMarketTime": 200, "postMarketPrice": 149.0, "postMarketTime": 100}, 151.0),
+    (None, {"preMarketPrice": 151.0, "preMarketTime": 100, "postMarketPrice": 149.0, "postMarketTime": 200}, 149.0),
+    (None, {"postMarketPrice": 149.5}, 149.5),
+    (None, {}, None),
+    (0.5, {"preMarketPrice": 151.0, "preMarketTime": 200}, None),
+])
+def test_quote_carries_the_newest_extended_price_only_when_closed(monkeypatch, session, info, expected):
+    from api import market_source
+
+    class _Yf:
+        @staticmethod
+        def Ticker(symbol):
+            return _FakeTicker({"currentPrice": 150.0, "previousClose": 148.0, **info})
+
+    monkeypatch.setattr(market_source, "_yfinance", lambda: _Yf)
+    monkeypatch.setattr(market_source, "session_fraction", lambda: session)
+    q = market_source._fetch_quote("AAPL")
+    assert q["price"] == 150.0 and q["extendedPrice"] == expected

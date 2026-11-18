@@ -49,3 +49,8 @@ def test_format_qty():
     assert format_qty(3.0) == "3"
     assert format_qty(0.06506100) == "0.065061"
     assert format_qty(0.0654) == "0.0654"
+
+
+def test_non_positive_alert_price_skips_the_run_up_rule():
+    assert invalid_reason({"priceAtAlert": 0}, 50.0, S) is None
+    assert invalid_reason({"priceAtAlert": -1.0}, 50.0, S) is None

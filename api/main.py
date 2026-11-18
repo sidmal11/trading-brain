@@ -26,19 +26,24 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from typing import List, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from config import Config
 from utils import news_client
 from utils.broker import get_broker
 from utils.db_client import DECISIONS, DbClient
+from utils.settings_store import effective_settings
 from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import TelegramClient, parse_callback
 
 from . import market_source, performance, top_stocks, trading
+from .validity import format_qty, suggest_quantity
 from .auth import auth_required, email_otp_enabled, get_otp_service, require_user
 
 logger = logging.getLogger(__name__)
@@ -65,6 +70,15 @@ FUTURES_UNIVERSE = [
 
 class ReviewRequest(BaseModel):
     decision: str
+    # At most one; neither buys the suggested quantity. Finite and capped so no request can size an absurd order.
+    shares: float | None = Field(None, gt=0, le=1_000_000, allow_inf_nan=False)
+    dollars: float | None = Field(None, gt=0, le=10_000_000, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def one_amount_at_most(self):
+        if self.shares is not None and self.dollars is not None:
+            raise ValueError("send shares or dollars, not both")
+        return self
 
     @field_validator("decision")
     @classmethod
@@ -201,6 +215,8 @@ def _signal_from_alert(alert):
         },
         "chartData": chart,
         "telegramMessageId": alert.get("telegramMessageId"),
+        "suggestedShares": suggest_quantity(trading.live_price(snapshot), _plain(alert.get("stopPrice")),
+                                            effective_settings()) or None,
         "screenerUrl": f"{Config.STOCK_SCREENER_URL}/stocks/{ticker}",
     }
 
@@ -351,7 +367,7 @@ def review_alert(
     order = None
     try:
         if body.decision == "APPROVED":
-            order = trading.execute_approval(existing, db)
+            order = trading.execute_approval(existing, db, shares=body.shares, dollars=body.dollars)
         elif not db.update_alert_status(alert_id, body.decision):
             raise trading.DecisionNotRecorded(alert_id)
     except trading.TradeRefused as refused:
@@ -570,9 +586,9 @@ def telegram_webhook(
         telegram.answer_callback_query(cb_id, f"{ticker}: order in progress.")
     else:
         if order is not None:
-            answer = f"Bought {order['quantity']} {ticker} (MOCK)"
+            answer = f"Bought {format_qty(order['quantity'])} {ticker} (MOCK)"
             telegram.send_text(
-                chat_id, f"Bought {order['quantity']} {ticker} at ${order['fillPrice']:.2f} (MOCK)."
+                chat_id, f"Bought {format_qty(order['quantity'])} {ticker} at ${order['fillPrice']:.2f} (MOCK)."
             )
         telegram.answer_callback_query(cb_id, answer)
         telegram.update_message_decision(tapped.get("message_id"), ticker, decision, chat_id=chat_id)
@@ -636,6 +652,12 @@ def create_app() -> FastAPI:
         description="Serves breakout signals, futures, market overview and the approval queue.",
         version="1.0.0",
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        # The default 422 echoes the input, and a JSON `Infinity` in it cannot be rendered (500 instead of 422).
+        errors = [{k: v for k, v in e.items() if k != "input"} for e in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
     origins = [origin.strip() for origin in Config.CORS_ALLOWED_ORIGINS.split(",") if origin.strip()]
     app.add_middleware(

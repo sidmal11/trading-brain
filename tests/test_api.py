@@ -170,11 +170,13 @@ def test_checklist_alert_reports_stored_confidence_and_conditions(db, client):
     assert [c["key"] for c in signal["conditions"]] == ["uptrend", "macd", "volume", "price_action", "reward_risk"]
     assert signal["conditions"][0]["points"] == 20
     assert (signal["entryPrice"], signal["stopPrice"], signal["targetPrice"]) == (100.5, 95.0, 108.75)
+    assert signal["suggestedShares"] == 1.494768  # $50 risk / ($128.45 - $95)
 
 
 def test_legacy_alert_keeps_pros_cons_score_and_empty_conditions(client):
     signal = client.get("/api/signals").json()[0]
     assert signal["conditions"] == [] and signal["strategy"] is None
+    assert signal["suggestedShares"] == 3.892565  # no stop: $500 / $128.45
     assert (signal["entryPrice"], signal["stopPrice"], signal["targetPrice"]) == (None, None, None)
     assert signal["aiAnalysis"]["confidenceScore"] == market_source._confidence(
         ["Strong demand", "Margin expansion"], ["Rich valuation"])

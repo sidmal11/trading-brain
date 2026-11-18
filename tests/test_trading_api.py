@@ -60,8 +60,8 @@ class Env:
     def set(self, **values):
         self.settings.put({**SETTINGS, **values})
 
-    def approve(self, alert_id="a1"):
-        return self.client.post(f"/api/alerts/{alert_id}/review", json={"decision": "APPROVED"})
+    def approve(self, alert_id="a1", **amount):
+        return self.client.post(f"/api/alerts/{alert_id}/review", json={"decision": "APPROVED", **amount})
 
     def status(self, alert_id="a1"):
         return self.alerts.get_alert(alert_id)["status"]
@@ -72,11 +72,14 @@ def env(monkeypatch, tmp_path):
     return Env(monkeypatch, tmp_path)
 
 
-def test_approve_buys_whole_shares_at_the_quote(env):
+SUGGESTED = 2.741228  # $500 / $182.40, rounded down to 6 decimals
+
+
+def test_approve_buys_the_suggested_quantity_at_the_quote(env):
     r = env.approve()
     assert r.status_code == 200
     order = r.json()["order"]
-    assert (order["quantity"], order["fillPrice"], order["status"]) == (2, 182.4, "FILLED")
+    assert (order["quantity"], order["fillPrice"], order["status"]) == (SUGGESTED, 182.4, "FILLED")
     assert order["broker"] == "mock" and order["side"] == "BUY" and order["alertId"] == "a1"
     assert env.status() == "APPROVED"
     assert len(_NoopTelegram.calls) == 1
@@ -108,7 +111,7 @@ def test_second_alert_for_a_held_ticker_is_refused_until_close(env):
     mine = [o for o in env.trades.list_orders() if o["alertId"] == "a2"]
     assert [(o["status"], o["reason"]) for o in mine] == [("FAILED", "Already holding AAPL.")]
     [position] = env.client.get("/api/positions").json()["positions"]
-    assert position["quantity"] == 2  # no second buy
+    assert position["quantity"] == SUGGESTED  # no second buy
     assert env.client.post("/api/positions/AAPL/close").status_code == 200
     r = env.approve("a2")
     assert r.status_code == 200 and r.json()["order"]["status"] == "FILLED"
@@ -122,18 +125,6 @@ def test_trading_off_only_records_the_decision(env):
     assert env.client.get("/api/orders").json() == []
 
 
-def _closed(env):
-    env.open = None
-
-
-def _yesterday(env):
-    env.save_alert("a1", trading_date="2026-11-16")
-
-
-def _no_date(env):
-    env.save_alert("a1", trading_date=None)
-
-
 def _limit(env):
     env.set(maxOrdersPerDay=1)
     env.save_alert("a0", ticker="MSFT")
@@ -144,21 +135,13 @@ def _no_price(env):
     env.price = None
 
 
-def _too_dear(env):
-    env.price = 812.3
-
-
 def _poor(env):
     env.mp.setattr(Config, "MOCK_STARTING_CASH", 100.0)
 
 
 @pytest.mark.parametrize("arrange, reason", [
-    (_closed, "Market is closed."),
-    (_yesterday, "Alert expired: it is not from today."),
-    (_no_date, "Alert expired: it is not from today."),
     (_limit, "Daily order limit reached (1)."),
     (_no_price, "Price unavailable."),
-    (_too_dear, "$500 buys no whole share at $812.30."),
     (_poor, "Not enough mock cash."),
 ])
 def test_each_limit_refuses_with_its_reason(env, arrange, reason):
@@ -174,9 +157,9 @@ def test_each_limit_refuses_with_its_reason(env, arrange, reason):
 
 
 def test_refused_then_retried_buys(env):
-    env.open = None
+    env.price = None
     assert env.approve().status_code == 409
-    env.open = 0.5
+    env.price = 182.4
     r = env.approve()
     assert r.status_code == 200 and r.json()["order"]["status"] == "FILLED"
     assert [o["status"] for o in env.client.get("/api/orders").json()] == ["FILLED", "FAILED"]
@@ -196,10 +179,10 @@ def test_positions_and_cash_after_a_buy(env):
     env.approve()
     body = env.client.get("/api/positions").json()
     assert body["broker"] == "mock" and body["startingCash"] == 10000.0
-    assert body["cash"] == round(10000 - 2 * 182.4, 2)
+    assert body["cash"] == round(10000 - SUGGESTED * 182.4, 2)
     [position] = body["positions"]
-    assert position["ticker"] == "AAPL" and position["quantity"] == 2
-    assert position["currentPrice"] == 182.4 and position["marketValue"] == 364.8
+    assert position["ticker"] == "AAPL" and position["quantity"] == SUGGESTED
+    assert position["currentPrice"] == 182.4 and position["marketValue"] == round(SUGGESTED * 182.4, 2)
     assert position["unrealizedPnl"] == 0.0
 
 
@@ -218,7 +201,7 @@ def test_close_sells_the_whole_position(env):
     r = env.client.post("/api/positions/AAPL/close")
     assert r.status_code == 200
     order = r.json()
-    assert (order["side"], order["quantity"], order["status"]) == ("SELL", 2, "FILLED")
+    assert (order["side"], order["quantity"], order["status"]) == ("SELL", SUGGESTED, "FILLED")
     assert env.client.get("/api/positions").json()["positions"] == []
 
 
@@ -255,11 +238,11 @@ def test_close_broker_exception_marks_the_sell_failed(env, monkeypatch):
     assert (sell["side"], sell["status"], sell["reason"]) == ("SELL", "FAILED", "Broker error.")
 
 
-def test_close_when_market_closed_is_409(env):
+def test_close_works_when_market_closed(env):
     env.approve()
     env.open = None
     r = env.client.post("/api/positions/AAPL/close")
-    assert r.status_code == 409 and r.json()["detail"] == "Market is closed."
+    assert r.status_code == 200 and r.json()["status"] == "FILLED"
 
 
 def test_close_works_with_trading_off(env):
@@ -311,3 +294,93 @@ def test_positions_empty_off_sqlite(off_sqlite):
 
 def test_close_is_404_off_sqlite(off_sqlite):
     assert off_sqlite.client.post("/api/positions/AAPL/close").status_code == 404
+
+
+# -- Amounts, any hour, validity re-check --------------------------------------
+
+def test_dollars_buy_a_fraction_of_a_share(env):
+    env.price = 153.7
+    order = env.approve(dollars=10).json()["order"]
+    assert (order["quantity"], order["status"]) == (0.065061, "FILLED")
+    body = env.client.get("/api/positions").json()
+    assert body["positions"][0]["quantity"] == 0.065061
+    assert body["cash"] == round(10000 - 0.065061 * 153.7, 2)
+
+
+def test_shares_buy_exactly_that_many(env):
+    order = env.approve(shares=0.25).json()["order"]
+    assert (order["quantity"], order["status"]) == (0.25, "FILLED")
+
+
+@pytest.mark.parametrize("amount", [
+    {"shares": 1, "dollars": 10}, {"shares": 0}, {"dollars": -5}, {"shares": 1_000_001},
+    {"dollars": 10_000_001}, {"shares": "abc"},
+])
+def test_bad_amounts_are_422_and_book_nothing(env, amount):
+    assert env.approve(**amount).status_code == 422
+    assert env.trades.list_orders() == [] and env.status() == "PENDING"
+
+
+def test_non_finite_amount_is_422(env):
+    r = env.client.post("/api/alerts/a1/review", content='{"decision": "APPROVED", "dollars": Infinity}',
+                        headers={"Content-Type": "application/json"})
+    assert r.status_code == 422
+
+
+def test_under_one_dollar_is_refused(env):
+    r = env.approve(dollars=0.5)
+    assert r.status_code == 409 and r.json()["detail"] == "Minimum order is $1."
+    assert env.status() == "PENDING"
+
+
+def test_no_price_is_refused_before_sizing_an_amount(env):
+    env.price = None
+    r = env.approve(dollars=10)
+    assert r.status_code == 409 and r.json()["detail"] == "Price unavailable."
+
+
+def test_approval_below_the_stop_expires_the_request(env):
+    env.alerts.save_alert("m1", "MSFT", "MACD", "x", trading_date=TODAY, strategy="macd",
+                          signal_type="MACD_CROSSOVER", stop=95.0, target=120.0, price=100.0)
+    env.price = 94.0
+    r = env.approve("m1")
+    assert r.status_code == 409 and r.json()["detail"] == "Request expired: Price fell to the stop $95.00."
+    assert env.status("m1") == "EXPIRED"
+    assert env.trades.list_orders() == []
+
+
+def test_approval_after_a_run_up_expires_the_request(env):
+    env.alerts.save_alert("v1", "MSFT", "Volume", "x", trading_date=TODAY, price=100.0)
+    env.price = 103.0
+    r = env.approve("v1")
+    assert r.json()["detail"] == "Request expired: Price ran more than 3% above the alert price $100.00."
+    assert env.status("v1") == "EXPIRED"
+
+
+def test_buys_with_the_market_closed(env):
+    env.open = None
+    r = env.approve()
+    assert r.status_code == 200 and r.json()["order"]["status"] == "FILLED"
+
+
+def test_buys_an_alert_from_an_earlier_day(env):
+    env.save_alert("a1", trading_date="2026-11-16")
+    r = env.approve()
+    assert r.status_code == 200 and r.json()["order"]["status"] == "FILLED"
+
+
+def test_decimal_quantity_round_trips_exactly(env):
+    order, _ = env.trades.claim_buy("x1", "XYZ", 0.065061, TODAY)
+    assert env.trades.fill(order["id"], 153.7)["quantity"] == 0.065061
+    assert env.trades.open_positions()[0]["quantity"] == 0.065061
+
+
+def test_price_of_uses_the_extended_price_when_closed(monkeypatch):
+    monkeypatch.setattr(trading.market_source, "quote", lambda t: {"price": 150.0, "extendedPrice": 152.5})
+    monkeypatch.setattr(trading, "session_fraction", lambda: None)
+    assert trading.price_of("AAPL") == 152.5
+    monkeypatch.setattr(trading, "session_fraction", lambda: 0.5)
+    assert trading.price_of("AAPL") == 150.0
+    monkeypatch.setattr(trading, "session_fraction", lambda: None)
+    monkeypatch.setattr(trading.market_source, "quote", lambda t: {"price": 150.0, "extendedPrice": None})
+    assert trading.price_of("AAPL") == 150.0

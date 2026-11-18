@@ -6,12 +6,13 @@ row left behind would block that alert for good.
 """
 
 from config import Config
-from utils.broker import BrokerError, MockBroker, get_broker, whole_shares
+from utils.broker import BrokerError, MockBroker, get_broker
 from utils.market_clock import session_fraction, trading_date
 from utils.settings_store import effective_settings, settings_store
 from utils.trades_store import TradesStore
 
 from . import market_source
+from .validity import invalid_reason, quantity_for, suggest_quantity
 
 BROKER_ERROR = "Broker error."
 
@@ -27,9 +28,16 @@ class DecisionNotRecorded(Exception):
     """The alert store did not take the status change."""
 
 
+def live_price(snapshot):
+    """The latest price: Yahoo's pre/post-market price when the regular session is closed and it has one."""
+    if session_fraction() is None and snapshot.get("extendedPrice"):
+        return snapshot["extendedPrice"]
+    return snapshot["price"]
+
+
 def price_of(ticker):
     snapshot = market_source.quote(ticker)
-    return snapshot["price"] if snapshot else None
+    return live_price(snapshot) if snapshot else None
 
 
 def get_trades_store():
@@ -53,19 +61,15 @@ def _settle(store, order, place, price):
 
 
 def _buy_refusal(alert, today, store, settings, price, quantity):
-    if session_fraction() is None:
-        return "Market is closed."
-    if alert.get("tradingDate") != today:
-        return "Alert expired: it is not from today."
     ticker = alert["ticker"].upper()
     if any(p["ticker"].upper() == ticker for p in store.open_positions()):
         return f"Already holding {ticker}."
     if store.filled_buys_on(today) >= settings["maxOrdersPerDay"]:
         return f"Daily order limit reached ({settings['maxOrdersPerDay']})."
-    if price is None:
+    if not price or price <= 0:
         return "Price unavailable."
-    if quantity <= 0:
-        return f"${settings['dollarsPerTrade']} buys no whole share at ${price:.2f}."
+    if quantity * price < 1:
+        return "Minimum order is $1."
     if store.cash(Config.MOCK_STARTING_CASH) < quantity * price:
         return "Not enough mock cash."
     return None
@@ -75,8 +79,11 @@ def _num(value):
     return None if value is None else float(value)  # DynamoDB hands back Decimal
 
 
-def execute_approval(alert, db):
-    """Buy for an approved alert. Returns the order, or None when trading is off."""
+def execute_approval(alert, db, shares=None, dollars=None):
+    """Buy for an approved alert: `shares`, `dollars`, or neither (the suggested quantity).
+
+    Returns the order, or None when trading is off.
+    """
     alert_id, ticker = alert["alertId"], alert["ticker"]
     if alert.get("status") == "EXPIRED":  # before the trading switch: never status-flip an expired alert
         raise TradeRefused(f"Request expired: {alert.get('expiredReason') or 'No longer valid.'}")
@@ -86,11 +93,18 @@ def execute_approval(alert, db):
         return None
 
     price = price_of(ticker)  # before the claim: no slow work between claim and fill/fail
-    quantity = whole_shares(settings["dollarsPerTrade"], price)
+    stop = _num(alert.get("stopPrice"))
+    reason = invalid_reason({**alert, "stopPrice": stop, "priceAtAlert": _num(alert.get("priceAtAlert"))},
+                            price, settings)
+    if reason:
+        db.expire_alert(alert_id, reason)
+        raise TradeRefused(f"Request expired: {reason}")
+    priced = price is not None and price > 0  # never size against a missing or zero price
+    quantity = quantity_for(price, shares, dollars, suggest_quantity(price, stop, settings)) if priced else 0
     today = trading_date()
     store = get_trades_store()
     order, created = store.claim_buy(alert_id, ticker, quantity, today, strategy=alert.get("strategy"),
-                                     stop_price=_num(alert.get("stopPrice")), target_price=_num(alert.get("targetPrice")))
+                                     stop_price=stop, target_price=_num(alert.get("targetPrice")))
     if not created:
         # Another approval owns this order; never fill or fail it from here.
         if order["status"] == "FILLED":
@@ -111,9 +125,7 @@ def execute_approval(alert, db):
 
 
 def close_position(ticker):
-    """Sell the whole position. The kill switch does not block Close."""
-    if session_fraction() is None:
-        raise TradeRefused("Market is closed.")
+    """Sell the whole position, at any hour. The kill switch does not block Close."""
     price = price_of(ticker)  # before the claim: no slow work between claim and fill/fail
     if price is None:
         raise TradeRefused("Price unavailable.")
