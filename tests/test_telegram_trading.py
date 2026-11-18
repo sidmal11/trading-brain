@@ -268,3 +268,22 @@ def test_repeated_confirm_does_not_report_a_second_buy(tg):
     assert sum(t.startswith("Bought") for t in tg.http.texts()) == 1
     assert _answers(tg.http)[-1] == "Already bought 0.5 AAPL (MOCK)"
     assert len(tg.client.get("/api/v1/orders").json()) == 1
+
+
+
+# ── P6: /pause and /resume ────────────────────────────────────────────────────
+
+def test_admin_pause_and_resume_flip_mock_trading(tg):
+    _say(tg, "/pause")
+    assert tg.http.texts()[-1] == "Mock trading paused. Approvals will not buy until /resume."
+    assert tg.client.get("/api/v1/settings").json()["tradingEnabled"] is False
+    _say(tg, "/resume")
+    assert tg.http.texts()[-1] == "Mock trading resumed."
+    assert tg.client.get("/api/v1/settings").json()["tradingEnabled"] is True
+
+
+def test_subscriber_pause_changes_nothing(tg):
+    before = len(tg.http.calls)
+    _say(tg, "/pause", chat_id="99")
+    assert len(tg.http.calls) == before
+    assert tg.client.get("/api/v1/settings").json()["tradingEnabled"] is True

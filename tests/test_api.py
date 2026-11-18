@@ -469,3 +469,52 @@ def test_strategy_performance_has_backtest_trades_and_live_outcomes(client, rese
 
 def test_unknown_strategy_is_404(client, research):
     assert client.get("/api/v1/strategies/nope/performance").status_code == 404
+
+
+
+# ── P6: earnings on signals, health status, pause and resume ──────────────────
+
+@pytest.fixture
+def sqlite_api(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(api_main.Config, "STORAGE_BACKEND", "sqlite")
+    monkeypatch.setattr(api_main.Config, "SQLITE_PATH", str(tmp_path / "h.db"))
+    monkeypatch.setattr(api_main, "trading_date", lambda: "2026-11-18")
+    return str(tmp_path / "h.db")
+
+
+def test_signals_carry_earnings_date_and_note(client, sqlite_api):
+    from datetime import date
+    from market_data.earnings import EarningsStore
+
+    EarningsStore(sqlite_api).save({"NVDA": date(2026, 11, 19)})
+    signal = client.get("/api/v1/signals").json()[0]
+    assert signal["earningsDate"] == "2026-11-19" and signal["earningsNote"] == "Earnings in 1 day (Nov 19)"
+
+
+def test_signals_without_a_known_date_have_null_earnings(client, sqlite_api):
+    signal = client.get("/api/v1/signals").json()[0]
+    assert signal["earningsDate"] is None and signal["earningsNote"] is None
+
+
+def test_health_status(client, sqlite_api, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from market_data.bar_store import BarStore
+    from utils.health import HealthStore
+
+    now = datetime.now(timezone.utc)
+    HealthStore(sqlite_api).set("lastPollAt", (now - timedelta(minutes=20)).isoformat())
+    HealthStore(sqlite_api).set("aiFailingSince", now.isoformat())
+    BarStore(sqlite_api).save_report("NVDA", {"status": "invalid", "issues": ["Stale"]})
+    BarStore(sqlite_api).save_report("AAPL", {"status": "valid", "issues": []})
+    body = client.get("/api/v1/health-status").json()
+    assert body["pollStale"] is True and body["aiFailingSince"] and body["skipped"] == ["NVDA"]
+    assert body["dataQuality"] == {"valid": 1, "warn": 0, "invalid": 1}
+
+    from utils.settings_store import SettingsStore
+    SettingsStore(sqlite_api).put({"pollIntervalMinutes": 30})  # 20 minutes is normal at a 30-minute interval
+    assert client.get("/api/v1/health-status").json()["pollStale"] is False
+
+
+def test_health_status_before_any_poll(client, sqlite_api):
+    body = client.get("/api/v1/health-status").json()
+    assert body["lastPollAt"] is None and body["pollStale"] is True and body["newestBar"] is None

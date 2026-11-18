@@ -95,6 +95,7 @@ def poll(monkeypatch, tmp_path):
     monkeypatch.setattr(lambda_function, "_bar_retry_at", 0.0)
     from utils.settings_store import SettingsStore
     SettingsStore(Config.SQLITE_PATH).put({"requestStrategies": ["macd", "volume"]})  # the old behaviour
+    monkeypatch.setattr(lambda_function, "download_earnings", lambda tickers, today: {})  # no Yahoo
     http = Telegram()
     monkeypatch.setattr(tc.requests, "post", http)
     http.prices = {}  # the sweep's quotes; a ticker not listed has no price this poll
@@ -712,3 +713,51 @@ def test_info_alerts_do_not_block_requests_or_use_the_cap(poll, monkeypatch):
     assert statuses == {"NVDA": "INFO"}  # the volume loop keeps its own cap of 1
     held = [a for a in alert_store().list_alerts() if a["status"] == "PENDING"]
     assert held == []  # an INFO alert never counts as an open request
+
+
+# ---------- P6: earnings and health ----------
+
+def test_request_message_carries_the_earnings_warning(poll):
+    from datetime import date
+    from market_data.earnings import EarningsStore
+
+    EarningsStore(Config.SQLITE_PATH).save({"NVDA": date(2026, 11, 17)})  # poll date 2026-11-16: next trading day
+    lambda_function.lambda_handler({}, None)
+    admin = [p for p in poll.sends() if str(p["chat_id"]) == ADMIN][0]["text"]
+    assert "Earnings in 1 day (Nov 17)" in admin
+
+
+def test_bar_refresh_also_refreshes_earnings_and_survives_a_failure(poll, monkeypatch):
+    from datetime import date
+    from market_data.earnings import EarningsStore
+
+    monkeypatch.setattr(lambda_function, "download_earnings", lambda tickers, today: {"WMT": date(2026, 11, 19)})
+    lambda_function.lambda_handler({}, None)
+    assert EarningsStore(Config.SQLITE_PATH).get(["WMT"]) == {"WMT": date(2026, 11, 19)}
+
+    def boom(*a):
+        raise RuntimeError("Yahoo down")
+
+    monkeypatch.setattr(lambda_function, "download_earnings", boom)
+    monkeypatch.setattr(lambda_function, "_bar_days", set())
+    lambda_function.lambda_handler({}, None)  # no crash; the stored date stays
+    assert EarningsStore(Config.SQLITE_PATH).get(["WMT"]) == {"WMT": date(2026, 11, 19)}
+
+
+def test_poll_records_its_run_and_the_ai_state(poll, monkeypatch):
+    from utils.health import HealthStore
+    from utils.llm_client import FAILED_TEXT
+
+    lambda_function.lambda_handler({}, None)
+    h = HealthStore(Config.SQLITE_PATH).get_all()
+    assert h["lastPollAt"] and h["lastAiOkAt"] and h.get("aiFailingSince") is None
+
+    monkeypatch.setattr(FakeLlm, "analyze_stock", lambda self, *a, **k: FAILED_TEXT)
+    monkeypatch.setattr(FakeScan, "get_market_scan_results", lambda self, **k: [
+        {"ticker": "AMD", "volume_score": 5.0, "price": 120.0}])
+    lambda_function.lambda_handler({}, None)
+    first = HealthStore(Config.SQLITE_PATH).get_all()["aiFailingSince"]
+    monkeypatch.setattr(FakeScan, "get_market_scan_results", lambda self, **k: [
+        {"ticker": "AAPL", "volume_score": 5.0, "price": 180.0}])
+    lambda_function.lambda_handler({}, None)
+    assert first and HealthStore(Config.SQLITE_PATH).get_all()["aiFailingSince"] == first  # kept from the first failure

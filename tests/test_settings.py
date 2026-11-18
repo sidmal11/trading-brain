@@ -187,6 +187,7 @@ def poll_env(monkeypatch, tmp_path):
     monkeypatch.setattr(lambda_function, "_bar_retry_at", 0.0)
     from utils.settings_store import SettingsStore
     SettingsStore(Config.SQLITE_PATH).put({"requestStrategies": ["macd", "volume"]})  # the old behaviour
+    monkeypatch.setattr(lambda_function, "download_earnings", lambda tickers, today: {})  # no Yahoo
     sent = []
 
     class Resp:

@@ -5,6 +5,9 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+FAILED_TEXT = "Unable to generate AI analysis at this time."  # the poll records AI health from it
+
+
 class LlmClient:
     def __init__(self):
         self.client = Groq(api_key=Config.GROQ_API_KEY)
@@ -48,4 +51,4 @@ class LlmClient:
             return text
         except Exception as e:
             logger.error(f"LLM analysis failed for {ticker}: {e}")
-            return "Unable to generate AI analysis at this time."
+            return FAILED_TEXT

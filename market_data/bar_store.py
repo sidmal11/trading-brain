@@ -60,6 +60,11 @@ class BarStore:
         with self._connect() as conn:
             return conn.execute("SELECT MAX(date) FROM market_bars WHERE ticker = ?", (ticker,)).fetchone()[0]
 
+    def latest_date(self) -> str | None:
+        """The newest stored bar date over every ticker."""
+        with self._connect() as conn:
+            return conn.execute("SELECT MAX(date) FROM market_bars").fetchone()[0]
+
     def save_report(self, ticker, report):
         with self._lock, self._connect() as conn:
             conn.execute("INSERT OR REPLACE INTO data_quality_reports VALUES (?, ?, ?, ?)",

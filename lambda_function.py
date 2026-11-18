@@ -18,6 +18,9 @@ from market_data.refresh import refresh_daily
 from backtesting.runner import MODULES as BACKTESTED, run_and_store
 from backtesting.store import ResearchStore
 from outcomes.update import outcome_rows
+from market_data.earnings import EarningsStore, download_earnings, earnings_note
+from utils.health import HealthStore
+from utils.llm_client import FAILED_TEXT
 import time
 from datetime import date
 from market_data.calendar import is_trading_day, previous_trading_day, session_minutes
@@ -55,6 +58,30 @@ def _refresh_bars(today, alerts):
         _bar_days.add(today)
     tickers = {a["ticker"] for a in alerts if a.get("ticker")}
     ResearchStore(Config.SQLITE_PATH).save_outcomes(outcome_rows(alerts, store.daily(tickers, before=today)))
+    try:  # earnings dates ride along with the daily refresh; a failure keeps yesterday's dates
+        EarningsStore(Config.SQLITE_PATH).save(download_earnings(UNIVERSE, date.fromisoformat(today)))
+    except Exception:
+        logger.exception("Earnings refresh failed")
+
+
+def _record_ai(analysis):
+    """AI health for the dashboard: the time of the last real analysis, or since when it has been failing."""
+    if Config.STORAGE_BACKEND != "sqlite":
+        return
+    health = HealthStore(Config.SQLITE_PATH)
+    now = datetime.now(timezone.utc).isoformat()
+    if analysis == FAILED_TEXT:
+        if not health.get_all().get("aiFailingSince"):  # keep the first failure time
+            health.set("aiFailingSince", now)
+    else:
+        health.set("lastAiOkAt", now)
+        health.set("aiFailingSince", None)
+
+
+def _earnings_note(ticker, today):
+    if Config.STORAGE_BACKEND != "sqlite":
+        return None
+    return earnings_note(EarningsStore(Config.SQLITE_PATH).get([ticker]).get(ticker), date.fromisoformat(today))
 
 
 def _weekly_backtests(today):
@@ -190,6 +217,8 @@ def lambda_handler(event, context):
     db = alert_store()
 
     settings = effective_settings()
+    if Config.STORAGE_BACKEND == "sqlite":  # the dashboard's health line reads this
+        HealthStore(Config.SQLITE_PATH).set("lastPollAt", datetime.now(timezone.utc).isoformat())
     if MARKET_US_STOCKS not in settings["markets"]:
         logger.info("US stocks are not enabled in settings; skipping scan.")
         return {"statusCode": 200, "body": "US stocks disabled in settings."}
@@ -244,8 +273,12 @@ def lambda_handler(event, context):
         # 4. Generate Pros/Cons with LLM
         analysis = llm.analyze_stock(ticker, signal_desc, stock_data, checklist=sig["checklist"],
                                      strategy_notes=strategy_notes(sig["strategy"]))
+        _record_ai(analysis)
         passed = sum(x["passed"] for x in sig["checklist"])
         conditions = f"{signal_desc}\nConditions met: {passed} of 5 ({sig['confidence']} points)"
+        note = _earnings_note(ticker, today)
+        if note:
+            conditions += f"\n{note}"
 
         # 5. Send Telegram Alert
         # The id is minted before the send, not after: it rides along in the

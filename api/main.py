@@ -21,7 +21,7 @@ Routes:
 import hmac
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -38,7 +38,8 @@ from config import Config
 from utils import news_client
 from utils.broker import get_broker
 from utils.db_client import DECISIONS, DbClient
-from utils.settings_store import effective_settings
+from utils.settings_store import effective_settings, settings_store
+from utils.market_clock import trading_date
 from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import (AMOUNT_PROMPT, AMOUNT_UNREADABLE, TelegramClient, build_confirm_keyboard,
                                    parse_amount_callback, parse_amount_text, parse_callback)
@@ -295,9 +296,44 @@ def get_signals(limit: int = Query(MAX_ENRICHED_SIGNALS, ge=1, le=MAX_ENRICHED_S
     alerts = db.list_alerts()[:limit]
     signals = _gather(alerts, _safe(_signal_from_alert))
     news = news_client.latest_by_ticker(signal["ticker"] for signal in signals)
+    dates, today = {}, date.fromisoformat(trading_date())
+    if Config.STORAGE_BACKEND == "sqlite":
+        from market_data.earnings import EarningsStore
+
+        dates = EarningsStore(Config.SQLITE_PATH).get({s["ticker"].upper() for s in signals})
+    from market_data.earnings import earnings_note
+
     for signal in signals:
         signal["news"] = news.get(signal["ticker"].upper(), [])
+        day = dates.get(signal["ticker"].upper())
+        signal["earningsDate"] = day.isoformat() if day else None
+        signal["earningsNote"] = earnings_note(day, today)
     return signals
+
+
+@router.get("/health-status")
+def get_health_status():
+    """For the dashboard's health line: last poll, AI state, data quality. Off SQLite there is no record."""
+    out = {"lastPollAt": None, "pollStale": True, "pollIntervalMinutes": effective_settings()["pollIntervalMinutes"],
+           "lastAiOkAt": None, "aiFailingSince": None, "dataQuality": {"valid": 0, "warn": 0, "invalid": 0},
+           "skipped": [], "newestBar": None}
+    if Config.STORAGE_BACKEND != "sqlite":
+        return out
+    from market_data.bar_store import BarStore
+    from utils.health import HealthStore
+
+    health = HealthStore(Config.SQLITE_PATH).get_all()
+    out.update({k: health.get(k) for k in ("lastPollAt", "lastAiOkAt", "aiFailingSince")})
+    if out["lastPollAt"]:
+        allowed = timedelta(minutes=max(15, 2 * out["pollIntervalMinutes"]))
+        out["pollStale"] = datetime.now(timezone.utc) - datetime.fromisoformat(out["lastPollAt"]) > allowed
+    bars = BarStore(Config.SQLITE_PATH)
+    for report in bars.reports():
+        out["dataQuality"][report["status"]] = out["dataQuality"].get(report["status"], 0) + 1
+        if report["status"] == "invalid":
+            out["skipped"].append(report["ticker"])
+    out["newestBar"] = bars.latest_date()
+    return out
 
 
 @router.get("/futures")
@@ -757,6 +793,19 @@ def _handle_command(message, subscribers):
         subscribers.deactivate(chat_id)
         telegram.send_text(chat_id, _GOODBYE)
         return {"ok": True, "unsubscribed": chat_id}
+
+    if command in ("/pause", "/resume"):
+        if chat_id not in telegram.admin_chat_ids:  # only the operator; a subscriber gets no change and no reply
+            return {"ok": True, "ignored": "command from a non-admin"}
+        store = settings_store()
+        if store is None:
+            telegram.send_text(chat_id, "Settings cannot be changed on this server.")
+            return {"ok": True, "ignored": "no settings store"}
+        enabled = command == "/resume"
+        store.put({"tradingEnabled": enabled})
+        telegram.send_text(chat_id, "Mock trading resumed." if enabled
+                           else "Mock trading paused. Approvals will not buy until /resume.")
+        return {"ok": True, "tradingEnabled": enabled}
 
     return {"ok": True, "ignored": "unknown command"}
 
