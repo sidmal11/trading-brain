@@ -75,6 +75,7 @@ if [ -z "$(swapon --show --noheadings)" ] && [ ! -e /swapfile ]; then
   mkswap /swapfile
   swapon /swapfile
 fi
+swapon /swapfile 2>/dev/null || true
 grep -qs '^/swapfile[[:space:]]' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 echo "==> Containers"
