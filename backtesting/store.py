@@ -23,6 +23,9 @@ class ResearchStore:
             conn.execute("CREATE INDEX IF NOT EXISTS backtest_trades_run ON backtest_trades (run_id)")
             conn.execute("CREATE TABLE IF NOT EXISTS signal_outcomes (alert_id TEXT PRIMARY KEY, strategy TEXT, "
                          "doc TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            conn.execute("CREATE TABLE IF NOT EXISTS strategy_results (ticker TEXT NOT NULL, date TEXT NOT NULL, "
+                         "strategy TEXT NOT NULL, version TEXT NOT NULL, doc TEXT NOT NULL, "
+                         "PRIMARY KEY (ticker, date, strategy, version))")
 
     def _connect(self):
         return sqlite3.connect(self.path, timeout=10)
@@ -53,6 +56,20 @@ class ResearchStore:
             rows = conn.execute(f"SELECT {', '.join(_TRADE_COLS)} FROM backtest_trades WHERE run_id = ? "
                                 "ORDER BY signal_date DESC LIMIT ?", (run_id, limit)).fetchall()
         return [dict(zip(_TRADE_COLS, r)) for r in rows]
+
+    def save_results(self, rows):
+        """Each strategy's result per ticker for its newest bar (the daily pass)."""
+        with self._lock, self._connect() as conn:
+            conn.executemany("INSERT OR REPLACE INTO strategy_results VALUES (?, ?, ?, ?, ?)",
+                             [(r["ticker"], r["asOf"], r["strategy"], r["version"], json.dumps(r)) for r in rows])
+
+    def latest_results(self, strategy) -> list:
+        """The strategy's results for the newest stored date, one per ticker."""
+        with self._connect() as conn:
+            day = conn.execute("SELECT MAX(date) FROM strategy_results WHERE strategy = ?", (strategy,)).fetchone()[0]
+            rows = conn.execute("SELECT doc FROM strategy_results WHERE strategy = ? AND date = ? ORDER BY ticker",
+                                (strategy, day)).fetchall() if day else []
+        return [json.loads(r[0]) for r in rows]
 
     def save_outcomes(self, rows):
         now = datetime.now(timezone.utc).isoformat()

@@ -111,7 +111,7 @@ class SettingsIn(BaseModel):
     maxChasePct: float = Field(ge=0.5, le=20)
     riskPerTrade: float = Field(ge=1, le=5000)
     stopAlertPct: float = Field(ge=0.1, le=20)
-    requestStrategies: List[Literal["macd", "volume"]]
+    requestStrategies: List[Literal["macd", "volume", "trend", "breakout", "mean_reversion"]]
 
     @field_validator("markets")
     @classmethod
@@ -288,6 +288,15 @@ def put_settings(body: SettingsIn):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Settings can only be saved with the SQLite storage backend.",
         )
+    gated = [s for s in body.requestStrategies if s in ("trend", "breakout", "mean_reversion")]
+    if gated:  # owner, Q18: a new strategy sends buy requests only after its backtest exists
+        from backtesting.store import ResearchStore
+
+        research = ResearchStore(Config.SQLITE_PATH)
+        missing = [s for s in gated if research.latest_run(s) is None]
+        if missing:
+            raise HTTPException(status_code=422, detail="Run the backtest for "
+                                + ", ".join(STRATEGY_NAMES[s] for s in missing) + " before it can send buy requests.")
     return store.put(body.model_dump())
 
 
@@ -506,7 +515,8 @@ def get_data_quality():
     return BarStore(Config.SQLITE_PATH).reports()
 
 
-STRATEGY_NAMES = {"macd": "MACD trend", "volume": "Volume surge"}
+STRATEGY_NAMES = {"breakout": "Breakout", "macd": "MACD trend", "mean_reversion": "Mean reversion",
+                  "trend": "Trend following", "volume": "Volume surge"}
 
 
 def _strategy_summary(store, strategy_id):
@@ -521,6 +531,8 @@ def _strategy_summary(store, strategy_id):
         "backtest": None if run is None else {k: run[k] for k in
                                               ("id", "createdAt", "strategyVersion", "backtestVersion", "params", "result")},
         "live": {**stats, "open": sum(o.get("ret") is None for o in live)},
+        "setups": [{k: r.get(k) for k in ("ticker", "asOf", "confidence", "newSetup", "label", "state")}
+                   for r in store.latest_results(strategy_id) if r.get("direction") == "bullish"],
     }
 
 

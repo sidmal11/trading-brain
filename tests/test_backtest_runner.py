@@ -103,3 +103,23 @@ def test_outcomes_round_trip(tmp_path):
     store.save_outcomes([row])
     store.save_outcomes([{**row, "ret": 0.2}])
     assert [r["ret"] for r in store.outcomes("macd")] == [0.2] and store.outcomes("volume") == []
+
+
+
+def test_a_long_trend_is_one_signal_not_one_per_day():
+    from tests.test_new_strategies import trend_bars
+    from strategies import trend
+
+    bars = trend_bars()
+    results = trend.evaluate_series(bars)
+    streak = [t for t, r in enumerate(results) if r["direction"] == "bullish"]
+    assert len(streak) > 50  # bullish for weeks...
+    assert runner.new_setups(results) == [streak[0]]  # ...but one new setup
+
+
+def test_series_strategies_backtest_through_the_runner():
+    from tests.test_new_strategies import dip_bars
+
+    bars = dip_bars() + walk(30, seed=4)[:0]
+    trades, skipped = runner.replay("mean_reversion", "AAA", bars + bars[-1:], spy=None)
+    assert skipped == 0 and all(t["bars_held"] is None or t["bars_held"] <= 10 for t in trades)

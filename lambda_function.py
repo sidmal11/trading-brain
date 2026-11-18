@@ -15,7 +15,7 @@ from api.validity import invalid_reason
 from utils.api_client import REFERENCE, UNIVERSE
 from market_data.bar_store import BarStore
 from market_data.refresh import refresh_daily
-from backtesting.runner import MODULES as BACKTESTED, run_and_store
+from backtesting.runner import MODULES as BACKTESTED, SERIES, new_setups, run_and_store
 from backtesting.store import ResearchStore
 from outcomes.update import outcome_rows
 from market_data.earnings import EarningsStore, download_earnings, earnings_note
@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 _macd_days = set()  # trading dates whose MACD pass finished in this process
 _bar_days = set()  # trading dates whose bar refresh succeeded in this process
 _backtest_days = set()  # Saturdays whose weekly backtests ran in this process
+_series_days = set()  # (date, strategy) pairs whose request pass finished in this process
+SERIES_TEXT = {"trend": "Trend following: new setup", "breakout": "Breakout: closing break of a 20-day high",
+               "mean_reversion": "Mean reversion: first up day after a dip"}
 _bar_retry_at = 0.0  # time.monotonic() before which a failed or partial refresh is not tried again
 RETRY_SECONDS = 30 * 60
 MIN_SESSION_MINUTES = 30  # the volume projection is too noisy before this
@@ -69,6 +72,10 @@ def _refresh_bars(today, alerts):
         _store_features(store, today)
     except Exception:
         logger.exception("Feature snapshots failed")
+    try:
+        _store_setups(store, today)
+    except Exception:
+        logger.exception("Strategy setups failed")
 
 
 def _store_features(bar_store, today):
@@ -79,6 +86,18 @@ def _store_features(bar_store, today):
         if bars.get(ticker):
             etf = SECTOR_ETF.get(ticker)
             features.save(ticker, build_features(bars[ticker][-HISTORY_BARS:], spy, bars.get(etf) if etf else None, etf))
+
+
+def _store_setups(bar_store, today):
+    """After the bar refresh: every series strategy's result per universe ticker for its newest bar."""
+    bars = bar_store.daily(UNIVERSE + ["SPY"], before=today)
+    spy, rows = bars.get("SPY", []), []
+    for module in SERIES.values():
+        for ticker in UNIVERSE:
+            results = module.evaluate_series(bars.get(ticker, []), spy)
+            if results:
+                rows.append({**results[-1], "ticker": ticker, "newSetup": len(results) - 1 in new_setups(results)})
+    ResearchStore(Config.SQLITE_PATH).save_results(rows)
 
 
 def _record_ai(analysis):
@@ -386,6 +405,26 @@ def lambda_handler(event, context):
                 raised += 1
         else:
             _macd_days.add(today)
+
+    # Series strategies the owner turned on for buy requests: one pass per day, a request only on a new setup.
+    enabled = [s for s in SERIES if s in settings["requestStrategies"] and (today, s) not in _series_days]
+    if enabled and Config.STORAGE_BACKEND == "sqlite":
+        history = BarStore(Config.SQLITE_PATH).daily(UNIVERSE + ["SPY"], before=today)
+        prices = {r.get("ticker"): r.get("price") for r in scan_results}
+        for name in enabled:
+            for ticker in UNIVERSE:
+                if signals_count >= settings["maxCandidatesPerRun"]:
+                    break
+                if ticker in held or (ticker, name, today) in seen:
+                    continue
+                results = SERIES[name].evaluate_series(history.get(ticker, []), history.get("SPY", []))
+                if results and len(results) - 1 in new_setups(results):
+                    sig = results[-1]
+                    signals_count += raise_alert(ticker, sig, f"{SERIES_TEXT[name]} ({sig['confidence']} points)",
+                                                 prices.get(ticker) or sig["entryPrice"])
+                    raised += 1
+            else:
+                _series_days.add((today, name))
 
     logger.info(f"Completed run. Processed {raised} signals ({signals_count} buy requests).")
     return {"statusCode": 200, "body": f"Processed {raised} signals."}

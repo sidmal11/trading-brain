@@ -444,9 +444,10 @@ def research(client, monkeypatch, tmp_path):
 
 def test_strategies_list_without_runs(client, research):
     rows = client.get("/api/v1/strategies").json()
-    assert [r["id"] for r in rows] == ["macd", "volume"]
+    assert [r["id"] for r in rows] == ["breakout", "macd", "mean_reversion", "trend", "volume"]
     assert all(r["backtest"] is None and r["live"]["trades"] == 0 and r["live"]["winRate"] is None for r in rows)
-    assert rows[0]["name"] == "MACD trend" and rows[0]["version"] == "1"
+    assert rows[1]["name"] == "MACD trend" and rows[1]["version"] == "1" and rows[3]["name"] == "Trend following"
+    assert all(r["setups"] == [] for r in rows)
 
 
 def test_strategy_performance_has_backtest_trades_and_live_outcomes(client, research):
@@ -584,3 +585,27 @@ def test_regime_route(client, sqlite_api):
     BarStore(sqlite_api).upsert("SPY", bars_from([100 * 1.002 ** i for i in range(300)], spread=0.3))
     body = client.get("/api/v1/regime").json()
     assert body["trend"] == "bull" and body["inputs"]["sma200"]
+
+
+
+# ── R5: setups and the settings gate ──────────────────────────────────────────
+
+def test_strategy_summary_lists_todays_setups(client, research):
+    research.save_results([
+        {"ticker": "AAPL", "asOf": "2026-11-17", "strategy": "trend", "version": "1", "direction": "bullish",
+         "confidence": 85, "newSetup": True, "label": "strong bullish"},
+        {"ticker": "MSFT", "asOf": "2026-11-17", "strategy": "trend", "version": "1", "direction": "neutral",
+         "confidence": 40, "newSetup": False, "label": "weak bullish"},
+    ])
+    trend_row = next(r for r in client.get("/api/v1/strategies").json() if r["id"] == "trend")
+    assert trend_row["setups"] == [{"ticker": "AAPL", "asOf": "2026-11-17", "confidence": 85, "newSetup": True,
+                                    "label": "strong bullish", "state": None}]
+
+
+def test_a_new_strategy_needs_its_backtest_before_buy_requests(client, research, monkeypatch):
+    from tests.test_settings import GOOD
+
+    r = client.put("/api/v1/settings", json={**GOOD, "requestStrategies": ["macd", "trend"]})
+    assert r.status_code == 422 and r.json()["detail"] == "Run the backtest for Trend following before it can send buy requests."
+    research.save_run("trend", "1", "1", {}, {"inSample": {}, "holdout": {}}, [])
+    assert client.put("/api/v1/settings", json={**GOOD, "requestStrategies": ["macd", "trend"]}).status_code == 200

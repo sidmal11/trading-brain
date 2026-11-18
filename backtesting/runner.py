@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 from backtesting.metrics import buy_and_hold, equity_stats, trade_stats
 from backtesting.simulator import CostModel, simulate
-from strategies import macd, volume
+from strategies import breakout, macd, mean_reversion, trend, volume
 from strategies.history import HISTORY_BARS
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,8 @@ BACKTEST_VERSION = "1"
 VOLUME_THRESHOLD = 3.0  # the live default
 HOLDOUT_DAYS = 365  # owner, Q9: the last 12 months are out of sample
 CAPITAL = 10_000.0  # the mock account's starting cash; each trade is CostModel.notional of it
-MODULES = {"volume": volume, "macd": macd}
+MODULES = {"volume": volume, "macd": macd, "trend": trend, "breakout": breakout, "mean_reversion": mean_reversion}
+SERIES = {k: m for k, m in MODULES.items() if hasattr(m, "evaluate_series")}  # whole-history strategies
 COOLDOWN = {"volume": 0, "macd": 3}  # live: one MACD alert per crossover, which stays "recent" for 3 bars
 CAVEATS = [
     "Today's large caps only: companies that failed or left the list are missing, so results lean high.",
@@ -48,8 +49,32 @@ def decide(strategy, ticker, window, threshold=VOLUME_THRESHOLD):
     return macd.evaluate(ticker, window, score, threshold)
 
 
-def replay(strategy, ticker, bars, cost=CostModel()):
+def new_setups(results):
+    """Indexes where a setup appears: bullish on this bar and not on the one before (live requests use the same rule)."""
+    return [t for t in range(1, len(results))
+            if results[t]["direction"] == "bullish" and results[t - 1]["direction"] != "bullish"]
+
+
+def _replay_series(module, ticker, bars, cost, spy):
+    results = module.evaluate_series(bars, spy)
+    trades, skipped, free_from = [], 0, 0
+    for t in new_setups(results):
+        if t >= len(bars) - 1 or t < free_from:
+            continue
+        r = results[t]
+        trade = simulate(bars, t, r["stopPrice"], r["targetPrice"], max_hold=module.MAX_HOLD, cost=cost)
+        if trade is None:
+            skipped += 1
+            continue
+        trades.append({**trade, "ticker": ticker, "signal_date": bars[t].date})
+        free_from = trade["exit_index"] + 1 if trade["exit_index"] is not None else len(bars)
+    return trades, skipped
+
+
+def replay(strategy, ticker, bars, cost=CostModel(), spy=None):
     """(trades, skipped) for one ticker: one open trade at a time; skipped = signals never entered."""
+    if strategy in SERIES:
+        return _replay_series(SERIES[strategy], ticker, bars, cost, spy)
     trades, skipped = [], 0
     free_from, last_signal = 0, None
     for t in range(HISTORY_BARS - 1, len(bars) - 1):
@@ -72,11 +97,12 @@ def run(strategy, bars_by_ticker, spy, cost=CostModel()) -> dict:
     """{"trades", "skipped", "windows": {"inSample", "holdout"}} over every ticker in `bars_by_ticker`."""
     trades, skipped = [], 0
     for ticker in sorted(bars_by_ticker):
-        got, missed = replay(strategy, ticker, bars_by_ticker[ticker], cost)
+        got, missed = replay(strategy, ticker, bars_by_ticker[ticker], cost, spy)
         trades += got
         skipped += missed
     days = [b.date for b in spy]
-    starts = [bars[HISTORY_BARS - 1].date for bars in bars_by_ticker.values() if len(bars) >= HISTORY_BARS]
+    first = getattr(MODULES[strategy], "WARMUP", HISTORY_BARS - 1)
+    starts = [bars[first].date for bars in bars_by_ticker.values() if len(bars) > first]
     windows = {}
     if days and starts:
         cut = (date.fromisoformat(days[-1]) - timedelta(days=HOLDOUT_DAYS)).isoformat()
@@ -98,8 +124,10 @@ def run_and_store(bar_store, research_store, strategy, tickers, today: str, cost
     spy = bars.pop("SPY", [])
     result = run(strategy, {t: b for t, b in bars.items() if t in tickers}, spy, cost)
     params = {"historyBars": HISTORY_BARS, "volumeThreshold": VOLUME_THRESHOLD, "holdoutDays": HOLDOUT_DAYS,
-              "maxHold": 20, "maxChasePct": 3.0, "slippageBps": cost.slippage_bps, "commission": cost.commission,
-              "notional": cost.notional, "capital": CAPITAL, "cooldownBars": COOLDOWN[strategy],
+              "maxHold": getattr(MODULES[strategy], "MAX_HOLD", 20), "maxChasePct": 3.0,
+              "slippageBps": cost.slippage_bps, "commission": cost.commission,
+              "notional": cost.notional, "capital": CAPITAL, "cooldownBars": COOLDOWN.get(strategy, 0),
+              "signalRule": "new setup only" if strategy in SERIES else "every signal",
               "tickers": len(tickers), "skippedEntries": result["skipped"], "caveats": CAVEATS}
     return research_store.save_run(strategy, MODULES[strategy].VERSION, BACKTEST_VERSION, params,
                                    result["windows"], result["trades"])

@@ -622,7 +622,7 @@ def test_saturday_poll_runs_both_backtests_once(poll, monkeypatch):
     monkeypatch.setattr(lambda_function, "run_and_store", lambda bars, store, strategy, tickers, today: runs.append(strategy))
     lambda_function.lambda_handler({}, None)
     lambda_function.lambda_handler({}, None)
-    assert sorted(runs) == ["macd", "volume"]
+    assert sorted(runs) == ["breakout", "macd", "mean_reversion", "trend", "volume"]
 
 
 def test_weekday_poll_runs_no_backtest(poll, monkeypatch):
@@ -774,3 +774,42 @@ def test_bar_refresh_stores_feature_snapshots(poll):
     lambda_function.lambda_handler({}, None)
     snap = FeatureStore(Config.SQLITE_PATH).latest("NVDA")
     assert snap and snap["relativeStrength"]["sectorEtf"] == "SMH" and snap["version"] == "1"
+
+
+
+# ---------- R5: daily setups and requests from an enabled series strategy ----------
+
+def test_bar_refresh_stores_daily_setups(poll):
+    from backtesting.store import ResearchStore
+    from market_data.bar_store import BarStore
+    from tests.test_new_strategies import trend_bars
+
+    BarStore(Config.SQLITE_PATH).upsert("NVDA", trend_bars())
+    lambda_function.lambda_handler({}, None)
+    rows = {r["strategy"]: r for r in ResearchStore(Config.SQLITE_PATH).latest_results("trend")}
+    assert rows["trend"]["ticker"] == "NVDA" and rows["trend"]["direction"] in ("bullish", "neutral")
+    assert {r["strategy"] for s in ("breakout", "mean_reversion") for r in ResearchStore(Config.SQLITE_PATH).latest_results(s)} == {"breakout", "mean_reversion"}
+
+
+def test_enabled_series_strategy_requests_only_a_new_setup(poll, monkeypatch):
+    from market_data.bar_store import BarStore
+    from datetime import date, timedelta
+    from tests.test_new_strategies import dip_bars
+    from utils import settings_store
+
+    bars = dip_bars()
+    dates, d = [], date(2026, 11, 13)  # end on the last trading day before the poll date, so nothing is stale
+    while len(dates) < len(bars):
+        if d.weekday() < 5:
+            dates.append(d.isoformat())
+        d -= timedelta(days=1)
+    bars = [b._replace(date=x) for b, x in zip(bars, reversed(dates))]
+    BarStore(Config.SQLITE_PATH).upsert("AAPL", bars)  # its last bar is a new mean-reversion setup
+    base = settings_store.defaults()
+    monkeypatch.setattr(lambda_function, "effective_settings",
+                        lambda: {**base, "volumeThreshold": 99.0, "requestStrategies": ["mean_reversion"]})
+    lambda_function.lambda_handler({}, None)
+    lambda_function.lambda_handler({}, None)  # once per day
+    alerts = [a for a in alert_store().list_alerts() if a["strategy"] == "mean_reversion"]
+    assert len(alerts) == 1 and alerts[0]["ticker"] == "AAPL" and alerts[0]["status"] == "PENDING"
+    assert alerts[0]["signalType"] == "MEAN_REVERSION"
