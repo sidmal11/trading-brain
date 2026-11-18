@@ -78,6 +78,8 @@ def _num(value):
 def execute_approval(alert, db):
     """Buy for an approved alert. Returns the order, or None when trading is off."""
     alert_id, ticker = alert["alertId"], alert["ticker"]
+    if alert.get("status") == "EXPIRED":  # before the trading switch: never status-flip an expired alert
+        raise TradeRefused(f"Request expired: {alert.get('expiredReason') or 'No longer valid.'}")
     settings = effective_settings()
     if settings_store() is None or not settings["tradingEnabled"]:
         _set_approved(db, alert_id)

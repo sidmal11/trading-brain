@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field, field_validator
 from config import Config
 from utils import news_client
 from utils.broker import get_broker
-from utils.db_client import VALID_STATUSES, DbClient
+from utils.db_client import DECISIONS, DbClient
 from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import TelegramClient, parse_callback
 
@@ -76,8 +76,8 @@ class ReviewRequest(BaseModel):
         422 naming the accepted values.
         """
         normalised = (value or "").strip().upper()
-        if normalised not in VALID_STATUSES:
-            raise ValueError(f"decision must be one of {sorted(VALID_STATUSES)}")
+        if normalised not in DECISIONS:
+            raise ValueError(f"decision must be one of {sorted(DECISIONS)}")
         return normalised
 
 

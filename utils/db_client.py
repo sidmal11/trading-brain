@@ -16,7 +16,11 @@ STATUS_PENDING = 'PENDING'
 STATUS_APPROVED = 'APPROVED'
 STATUS_REJECTED = 'REJECTED'
 
-VALID_STATUSES = frozenset({STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED})
+STATUS_EXPIRED = 'EXPIRED'
+
+# Stored statuses include EXPIRED (set by the system); DECISIONS is what a reviewer may submit.
+VALID_STATUSES = frozenset({STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED, STATUS_EXPIRED})
+DECISIONS = frozenset({STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED})
 
 
 def _now_iso():
@@ -124,6 +128,23 @@ class DbClient:
             return None
 
         return response.get('Item')
+
+    def expire_alert(self, alert_id, reason):
+        """PENDING -> EXPIRED with a reason. Returns whether it changed."""
+        try:
+            self.table.update_item(
+                Key={'alertId': alert_id},
+                UpdateExpression='SET #s = :expired, expiredReason = :reason, expiredAt = :at',
+                ConditionExpression='#s = :pending',
+                ExpressionAttributeValues={':expired': STATUS_EXPIRED, ':reason': reason,
+                                           ':at': _now_iso(), ':pending': STATUS_PENDING},
+                ExpressionAttributeNames={'#s': 'status'},
+            )
+            return True
+        except ClientError as e:
+            if e.response.get('Error', {}).get('Code') != 'ConditionalCheckFailedException':
+                logger.error(f"Failed to expire alert {alert_id}: {e}")
+            return False
 
     def update_alert_status(self, alert_id, status):
         """Records a review decision, stamping when it was made.

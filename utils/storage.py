@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 from config import Config
 
 STATUS_PENDING = "PENDING"
-VALID_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED"})
+STATUS_EXPIRED = "EXPIRED"
+VALID_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", STATUS_EXPIRED})
 
 
 def _now_iso():
@@ -102,6 +103,17 @@ class SqliteStore:
             item = json.loads(row[0])
             item["status"] = status
             item["reviewedAt"] = _now_iso()
+            conn.execute("UPDATE alerts SET doc = ? WHERE alert_id = ?", (json.dumps(item), alert_id))
+        return True
+
+    def expire_alert(self, alert_id, reason):
+        """PENDING -> EXPIRED with a reason. Returns whether it changed."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT doc FROM alerts WHERE alert_id = ?", (alert_id,)).fetchone()
+            item = json.loads(row[0]) if row else None
+            if item is None or item.get("status") != "PENDING":
+                return False
+            item.update(status=STATUS_EXPIRED, expiredReason=reason, expiredAt=_now_iso())
             conn.execute("UPDATE alerts SET doc = ? WHERE alert_id = ?", (json.dumps(item), alert_id))
         return True
 
