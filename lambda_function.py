@@ -153,7 +153,7 @@ def _gated_tickers():
     """{ticker: failed gates} from the latest opportunities: these tickers get no alert of any kind."""
     if Config.STORAGE_BACKEND != "sqlite":
         return {}
-    return {o["ticker"]: o["explanation"]["gatesFailed"] for o in OpportunityStore(Config.SQLITE_PATH).latest()
+    return {o["ticker"]: o["explanation"]["gatesFailed"] for o in OpportunityStore(Config.SQLITE_PATH).latest(UNIVERSE)
             if not o["eligible"]}
 
 
@@ -179,7 +179,7 @@ def _research_alerts(settings, telegram, today):
             settings.get("scoreAlertsEnabled") or settings.get("agreementAlertsEnabled")):
         return []
     notices, sent = alert_store(), []
-    for o in OpportunityStore(Config.SQLITE_PATH).latest():
+    for o in OpportunityStore(Config.SQLITE_PATH).latest(UNIVERSE):
         if not o["eligible"]:
             continue
         texts = []

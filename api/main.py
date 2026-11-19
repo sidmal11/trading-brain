@@ -428,7 +428,9 @@ def _opportunities():
         return []
     from scoring.opportunity import OpportunityStore
 
-    return OpportunityStore(Config.SQLITE_PATH).latest()
+    from utils.universe import universe_tickers
+
+    return OpportunityStore(Config.SQLITE_PATH).latest(universe_tickers())
 
 
 @router.get("/universe")

@@ -81,12 +81,26 @@ class OpportunityStore:
             conn.executemany("INSERT OR REPLACE INTO opportunities VALUES (?, ?, ?, ?)",
                              [(o["ticker"], o["asOf"], SCORE_VERSION, json.dumps(o)) for o in rows])
 
-    def latest(self) -> list:
-        """The newest day's opportunities, ranked."""
+    def latest(self, tickers=None) -> list:
+        """Ranked opportunities: the newest day's, or with `tickers` (the universe) each ticker's newest.
+
+        With `tickers`, a ticker whose bars stopped updating still shows: the daily pass rebuilds it every day with
+        its "Stale data" gate, filed under its last bar's date, so the newest day alone would hide it.
+        """
         with self._connect() as conn:
-            day = conn.execute("SELECT MAX(date) FROM opportunities WHERE score_version = ?", (SCORE_VERSION,)).fetchone()[0]
-            rows = conn.execute("SELECT doc FROM opportunities WHERE date = ? AND score_version = ?",
-                                (day, SCORE_VERSION)).fetchall() if day else []
+            if tickers is None:
+                day = conn.execute("SELECT MAX(date) FROM opportunities WHERE score_version = ?",
+                                   (SCORE_VERSION,)).fetchone()[0]
+                rows = conn.execute("SELECT doc FROM opportunities WHERE date = ? AND score_version = ?",
+                                    (day, SCORE_VERSION)).fetchall() if day else []
+            elif not tickers:
+                rows = []
+            else:
+                marks = ",".join("?" * len(tickers))
+                rows = conn.execute(
+                    f"SELECT o.doc FROM opportunities o WHERE o.score_version = ? AND o.ticker IN ({marks}) AND o.date = "
+                    "(SELECT MAX(date) FROM opportunities WHERE ticker = o.ticker AND score_version = ?)",
+                    (SCORE_VERSION, *tickers, SCORE_VERSION)).fetchall()
         return rank([json.loads(r[0]) for r in rows])
 
     def latest_for(self, ticker) -> dict | None:

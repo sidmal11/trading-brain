@@ -33,6 +33,7 @@ def opportunity(ticker, score, strategies):
 def env(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "STORAGE_BACKEND", "sqlite")
     monkeypatch.setattr(Config, "SQLITE_PATH", str(tmp_path / "r.db"))
+    monkeypatch.setattr(lambda_function, "UNIVERSE", ["NEW", "OLD", "KO", "PG"])
     return OpportunityStore(Config.SQLITE_PATH)
 
 
@@ -61,3 +62,15 @@ def test_negative_debt_to_equity_is_weak_not_healthy():
     scores = {m["key"]: m["score"] for m in c.fundamental_metrics({"debtToEquity": -350.0})}
     assert scores["debtToEquity"] == 0
     assert {m["key"]: m["score"] for m in c.fundamental_metrics({"debtToEquity": 80.0})}["debtToEquity"] == 100
+
+
+def test_a_stale_ticker_still_shows_with_its_gate_and_a_removed_one_does_not(env):
+    stale = {**opportunity("PG", 40, {}), "asOf": "2026-11-12", "eligible": False,
+             "explanation": {"positives": [], "gatesFailed": ["Stale data: newest bar 2026-11-12, expected 2026-11-17"]}}
+    env.save([opportunity("KO", 70, {}), stale, opportunity("GONE", 90, {})])
+    rows = env.latest(["KO", "PG"])
+    assert [(o["ticker"], o["eligible"]) for o in rows] == [("KO", True), ("PG", False)]  # eligible first
+    assert rows[1]["explanation"]["gatesFailed"][0].startswith("Stale data")
+    assert [o["ticker"] for o in env.latest()] == ["GONE", "KO"]  # without a universe: the newest day only
+    assert env.latest([]) == []
+    assert lambda_function._gated_tickers() == {"PG": ["Stale data: newest bar 2026-11-12, expected 2026-11-17"]}
