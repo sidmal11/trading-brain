@@ -9,13 +9,17 @@ makes a double approval place one order while a refused one can be retried.
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 _COLUMNS = ("id", "alert_id", "ticker", "side", "quantity", "status", "fill_price", "reason",
             "broker", "strategy", "stop_price", "target_price", "trading_date", "created_at")
 _WIRE = ("id", "alertId", "ticker", "side", "quantity", "status", "fillPrice", "reason",
          "broker", "strategy", "stopPrice", "targetPrice", "tradingDate", "createdAt")
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM orders"
+
+
+STRANDED_SECONDS = 120
+STRANDED_REASON = "Interrupted: the server stopped before this order finished."
 
 
 def _wire(row):
@@ -42,6 +46,13 @@ class TradesStore:
     def _connect(self):
         return sqlite3.connect(self.path, timeout=10)
 
+    @staticmethod
+    def _fail_stranded(conn):
+        """A mock fill takes milliseconds, so an order PENDING this long was cut off by a crash or restart."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STRANDED_SECONDS)).isoformat()
+        conn.execute("UPDATE orders SET status = 'FAILED', reason = ? WHERE status = 'PENDING' AND created_at < ?",
+                     (STRANDED_REASON, cutoff))
+
     def _get(self, conn, order_id):
         return _wire(conn.execute(f"{_SELECT} WHERE id = ?", (order_id,)).fetchone())
 
@@ -57,6 +68,8 @@ class TradesStore:
     def claim_buy(self, alert_id, ticker, quantity, trading_date, strategy=None, stop_price=None, target_price=None):
         """Insert a PENDING buy. Returns (order, True), or (existing live buy, False) if one exists."""
         with self._lock:
+            with self._connect() as conn:
+                self._fail_stranded(conn)
             for attempt in range(2):
                 try:
                     with self._connect() as conn:
@@ -73,8 +86,9 @@ class TradesStore:
                 # The conflicting buy was marked FAILED in between: retry the insert once.
 
     def live_buy(self, alert_id):
-        """The alert's buy that is pending or filled, or None."""
-        with self._connect() as conn:
+        """The alert's buy that is pending or filled, or None. A stranded pending buy is failed first."""
+        with self._lock, self._connect() as conn:
+            self._fail_stranded(conn)
             return self._live_buy(conn, alert_id)
 
     def _live_buy(self, conn, alert_id):
@@ -88,6 +102,7 @@ class TradesStore:
         with self._lock, self._connect() as conn:
             # The lock is per store object; BEGIN IMMEDIATE serialises across objects and processes.
             conn.execute("BEGIN IMMEDIATE")
+            self._fail_stranded(conn)
             # A pending buy too: selling only the filled lots would orphan its shares once it fills.
             if conn.execute("SELECT 1 FROM orders WHERE ticker = ? AND status = 'PENDING'",
                             (ticker,)).fetchone():

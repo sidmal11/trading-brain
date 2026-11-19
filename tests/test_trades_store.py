@@ -182,3 +182,38 @@ def test_close_refused_while_a_buy_of_the_ticker_is_pending(store):
     assert store.claim_sell("AAPL", DAY) is None
     store.fill(pending["id"], 100.0)
     assert store.claim_sell("AAPL", DAY)["quantity"] == 5
+
+
+def _age(store, order_id, seconds):
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE orders SET created_at = ? WHERE id = ?",
+                     ((datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(), order_id))
+
+
+def test_a_buy_stranded_by_a_crash_no_longer_blocks_its_alert(tmp_path):
+    from utils.trades_store import STRANDED_REASON, TradesStore
+
+    store = TradesStore(str(tmp_path / "t.db"))
+    stuck, _ = store.claim_buy("a1", "AAPL", 2, "2026-11-17")
+    assert store.live_buy("a1")["status"] == "PENDING"  # fresh: still in flight
+    _age(store, stuck["id"], 121)
+    assert store.live_buy("a1") is None
+    retry, created = store.claim_buy("a1", "AAPL", 2, "2026-11-17")
+    assert created and retry["id"] != stuck["id"]
+    assert [o["reason"] for o in store.list_orders() if o["id"] == stuck["id"]] == [STRANDED_REASON]
+
+
+def test_a_stranded_order_no_longer_blocks_closing_the_ticker(tmp_path):
+    from utils.trades_store import TradesStore
+
+    store = TradesStore(str(tmp_path / "t.db"))
+    bought, _ = store.claim_buy("a1", "AAPL", 2, "2026-11-17")
+    store.fill(bought["id"], 100.0)
+    stuck, _ = store.claim_buy("a2", "AAPL", 1, "2026-11-17")
+    assert store.claim_sell("AAPL", "2026-11-17") is None  # a pending buy blocks the sell
+    _age(store, stuck["id"], 300)
+    sell = store.claim_sell("AAPL", "2026-11-17")
+    assert sell and sell["quantity"] == 2
