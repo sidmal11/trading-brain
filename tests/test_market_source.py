@@ -157,3 +157,17 @@ def test_quote_carries_the_newest_extended_price_only_when_closed(monkeypatch, s
     monkeypatch.setattr(market_source, "session_fraction", lambda: session)
     q = market_source._fetch_quote("AAPL")
     assert q["price"] == 150.0 and q["extendedPrice"] == expected
+
+
+def test_futures_rows_are_reused_for_a_minute_and_failures_retried(monkeypatch):
+    from api import market_source
+
+    calls = []
+    monkeypatch.setattr(market_source, "_cache", {})
+    monkeypatch.setattr(market_source, "_futures_contract",
+                        lambda symbol, name, category: calls.append(symbol) or ({"symbol": symbol} if symbol != "BAD=F" else None))
+    assert market_source.futures_contract("ES=F", "S&P", "Index") == {"symbol": "ES=F"}
+    assert market_source.futures_contract("ES=F", "S&P", "Index") == {"symbol": "ES=F"}
+    assert market_source.futures_contract("BAD=F", "x", "y") is None
+    assert market_source.futures_contract("BAD=F", "x", "y") is None
+    assert calls == ["ES=F", "BAD=F", "BAD=F"]  # one Yahoo call for ES=F; the failure is retried

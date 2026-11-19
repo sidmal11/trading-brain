@@ -292,7 +292,11 @@ def _fetch_index(symbol):
 
 
 def futures_contract(symbol, name, category):
-    """Build one FuturesContract row, or None if the symbol will not resolve."""
+    """One FuturesContract row, reused for a minute like quotes, or None if the symbol will not resolve."""
+    return _cached(("futures", symbol), lambda: _futures_contract(symbol, name, category))
+
+
+def _futures_contract(symbol, name, category):
     yf = _yfinance()
     if yf is None:
         return None
