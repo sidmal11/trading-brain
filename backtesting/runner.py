@@ -138,14 +138,14 @@ def main():
     from config import Config
     from market_data.bar_store import BarStore
     from backtesting.store import ResearchStore
-    from utils.api_client import UNIVERSE
+    from utils.universe import universe_tickers
     from utils.market_clock import trading_date
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("strategy", choices=sorted(MODULES))
     args = parser.parse_args()
     store = ResearchStore(Config.SQLITE_PATH)
-    run_id = run_and_store(BarStore(Config.SQLITE_PATH), store, args.strategy, UNIVERSE, trading_date())
+    run_id = run_and_store(BarStore(Config.SQLITE_PATH), store, args.strategy, universe_tickers(), trading_date())
     print(json.dumps(store.latest_run(args.strategy)["result"], indent=2))
     print(f"run {run_id} stored")
 

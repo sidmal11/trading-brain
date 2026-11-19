@@ -132,6 +132,31 @@ class SettingsIn(BaseModel):
         return value
 
 
+TICKER_PATTERN = r"^[A-Za-z0-9.\-]{1,10}$"
+
+
+class UniverseItem(BaseModel):
+    ticker: str = Field(pattern=TICKER_PATTERN)
+    domain: str = Field(min_length=1, max_length=40)
+
+
+class UniverseIn(BaseModel):
+    items: List[UniverseItem] = Field(min_length=1)
+
+    @field_validator("items")
+    @classmethod
+    def at_most_100_and_no_duplicates(cls, value):
+        from utils.universe import MAX_TICKERS
+
+        tickers = [x.ticker.upper() for x in value]
+        if len(tickers) > MAX_TICKERS:
+            raise ValueError(f"at most {MAX_TICKERS} tickers")
+        repeated = sorted({t for t in tickers if tickers.count(t) > 1})
+        if repeated:
+            raise ValueError("tickers must not repeat: " + ", ".join(repeated))
+        return value
+
+
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
 _db_client = None
@@ -395,6 +420,53 @@ def _opportunities():
     return OpportunityStore(Config.SQLITE_PATH).latest()
 
 
+@router.get("/universe")
+def get_universe():
+    """The stock universe grouped by domain, in the stored order, with each ticker's exchange (or null)."""
+    from utils.universe import SEED, universe_store
+
+    store = universe_store()
+    items = store.items() if store else [{"ticker": t, "domain": d, "exchange": None} for d, ts in SEED.items() for t in ts]
+    return {"items": items, "persistent": store is not None}
+
+
+@router.put("/universe")
+def put_universe(body: UniverseIn):
+    from utils.universe import universe_store
+
+    store = universe_store()
+    if store is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="The universe can only be saved with the SQLite storage backend.")
+    items = store.replace([{"ticker": x.ticker.upper(), "domain": x.domain.strip()} for x in body.items])
+    return {"items": items, "persistent": True}
+
+
+@router.get("/bars/{ticker}")
+def get_bars(ticker: str = Path(..., pattern=TICKER_PATTERN), days: int = Query(120, ge=5, le=500)):
+    """The ticker's last `days` stored completed daily bars, oldest first."""
+    ticker = ticker.upper()
+    bars = []
+    if Config.STORAGE_BACKEND == "sqlite":
+        from market_data.bar_store import BarStore
+
+        bars = BarStore(Config.SQLITE_PATH).daily([ticker], before=trading_date()).get(ticker, [])
+    if not bars:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No stored daily bars for {ticker}.")
+    return [{"date": b.date, "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume}
+            for b in bars[-days:]]
+
+
+def _with_universe(rows):
+    """Each opportunity with its ticker's domain and exchange from the universe (null when not listed)."""
+    from utils.universe import universe_store
+
+    store = universe_store()
+    listed = {x["ticker"]: x for x in store.items()} if store else {}
+    return [{**o, "domain": listed.get(o["ticker"], {}).get("domain"),
+             "exchange": listed.get(o["ticker"], {}).get("exchange")} for o in rows]
+
+
 @router.get("/opportunities")
 def get_opportunities(
     eligible: bool | None = Query(None),
@@ -404,7 +476,7 @@ def get_opportunities(
     data_quality: str | None = Query(None, alias="dataQuality", pattern="^(valid|warn|invalid)$"),
 ):
     """The latest day's opportunities, eligible first and by research score; filters narrow the list."""
-    rows = _opportunities()
+    rows = _with_universe(_opportunities())
     if eligible is not None:
         rows = [o for o in rows if o["eligible"] == eligible]
     if min_score is not None:

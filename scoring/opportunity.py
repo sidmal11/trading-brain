@@ -33,7 +33,8 @@ def build_opportunity(ticker, bars, features, results, regime, quality, earnings
         "qualityScore": agg["score"], "direction": agg["direction"], "bullishScore": agg["score"],
         "bearishScore": None, "calibratedProbability": None,  # bearish not scored yet (Q4); no calibration until R9
         "coverage": agg["coverage"], "eligible": not failed, "breakdown": agg["breakdown"],
-        "strategies": {k: {"direction": r["direction"], "score": r["confidence"], "version": r.get("version")}
+        "strategies": {k: {"direction": r["direction"], "score": r["confidence"], "version": r.get("version"),
+                           "checklist": r.get("checklist", [])}
                        for k, r in results.items() if r},
         "risk": risk, "dataQuality": quality, "earningsDate": earnings_day.isoformat() if earnings_day else None,
         "explanation": explain(agg, results, risk, failed, warnings, comps),

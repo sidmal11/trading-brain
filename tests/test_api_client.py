@@ -48,7 +48,7 @@ class TestScanResults(unittest.TestCase):
             "AAPL": [100] * 5 + [150],
             "MSFT": [100] * 5 + [400],
         })
-        with patch.object(api_client, "UNIVERSE", ["AAPL", "MSFT"]), \
+        with patch.object(api_client, "universe_tickers", lambda: ["AAPL", "MSFT"]), \
              patch.object(api_client.yf, "download", return_value=frame):
             results = ApiClient().get_market_scan_results()
         self.assertEqual(results, [
@@ -58,28 +58,28 @@ class TestScanResults(unittest.TestCase):
 
     def test_results_carry_latest_close_as_price(self):
         frame = _fake_download({"AAPL": [100] * 5 + [300]}, closes_by_ticker={"AAPL": [10, 11, 12, 13, 14, 15.5]})
-        with patch.object(api_client, "UNIVERSE", ["AAPL"]), \
+        with patch.object(api_client, "universe_tickers", lambda: ["AAPL"]), \
              patch.object(api_client.yf, "download", return_value=frame):
             results = ApiClient().get_market_scan_results()
         self.assertEqual(results, [{"ticker": "AAPL", "volume_score": 3.0, "price": 15.5}])
 
     def test_nan_close_gives_price_none(self):
         frame = _fake_download({"AAPL": [100] * 5 + [300]}, closes_by_ticker={"AAPL": [10, 11, 12, 13, 14, float("nan")]})
-        with patch.object(api_client, "UNIVERSE", ["AAPL"]), \
+        with patch.object(api_client, "universe_tickers", lambda: ["AAPL"]), \
              patch.object(api_client.yf, "download", return_value=frame):
             results = ApiClient().get_market_scan_results()
         self.assertIsNone(results[0]["price"])
 
     def test_ticker_without_todays_bar_is_skipped(self):
         frame = _fake_download({"AAPL": [100] * 5 + [300]}, last_date="2026-11-13")
-        with patch.object(api_client, "UNIVERSE", ["AAPL"]), \
+        with patch.object(api_client, "universe_tickers", lambda: ["AAPL"]), \
              patch.object(api_client.yf, "download", return_value=frame):
             results = ApiClient().get_market_scan_results(session_fraction=0.5, trading_date="2026-11-16")
         self.assertEqual(results, [])
 
     def test_todays_bar_present_is_projected(self):
         frame = _fake_download({"AAPL": [100] * 5 + [150]}, last_date="2026-11-16")
-        with patch.object(api_client, "UNIVERSE", ["AAPL"]), \
+        with patch.object(api_client, "universe_tickers", lambda: ["AAPL"]), \
              patch.object(api_client.yf, "download", return_value=frame):
             results = ApiClient().get_market_scan_results(session_fraction=0.5, trading_date="2026-11-16")
         self.assertEqual(results[0]["volume_score"], 3.0)

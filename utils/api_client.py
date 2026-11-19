@@ -1,15 +1,11 @@
 import logging
 
 import yfinance as yf
+from utils.universe import universe_tickers
 
 logger = logging.getLogger(__name__)
 
 # shortcut: fixed list of large US tickers, not a full-market scan; widen it when the screener needs tickers outside this list
-UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD", "NFLX", "AVGO",
-    "JPM", "BAC", "GS", "V", "MA", "XOM", "CVX", "WMT", "COST", "HD",
-    "DIS", "NKE", "SBUX", "INTC", "CSCO", "ORCL", "CRM", "ADBE", "PYPL", "UBER",
-]
 # Stored for relative strength and regime (owner Q12); never scanned or alerted on.
 REFERENCE = ["SPY", "QQQ", "IWM", "XLK", "SMH", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLC", "XLU"]
 
@@ -29,15 +25,16 @@ class ApiClient:
     """Market data from Yahoo Finance (via yfinance). Unofficial and rate-limited by Yahoo."""
 
     def get_market_scan_results(self, market="US", session_fraction=1.0, trading_date=None):
+        tickers = universe_tickers()
         try:
-            data = yf.download(UNIVERSE, period="1mo", interval="1d", group_by="ticker",
+            data = yf.download(tickers, period="1mo", interval="1d", group_by="ticker",
                                threads=False, progress=False, auto_adjust=False)
         except Exception as e:
             logger.error(f"Yahoo download failed: {e}")
             return []
 
         results = []
-        for ticker in UNIVERSE:
+        for ticker in tickers:
             try:
                 bars = data[ticker].dropna(subset=["Volume"])
             except KeyError:

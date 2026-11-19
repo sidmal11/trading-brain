@@ -12,7 +12,8 @@ from utils.market_clock import MARKET_TZ, session_fraction, trading_date
 from datetime import datetime, timezone
 from api.trading import get_trades_store, price_of
 from api.validity import invalid_reason
-from utils.api_client import REFERENCE, UNIVERSE
+from utils.api_client import REFERENCE
+from utils.universe import SEED_TICKERS, fill_exchanges, universe_store, universe_tickers
 from market_data.bar_store import BarStore
 from market_data.refresh import refresh_daily
 from backtesting.runner import MODULES as BACKTESTED, SERIES, new_setups, run_and_store
@@ -44,6 +45,7 @@ SERIES_TEXT = {"trend": "Trend following: new setup", "breakout": "Breakout: clo
                "mean_reversion": "Mean reversion: first up day after a dip",
                "momentum": "Momentum: accelerating and ahead of SPY", "pullback": "Pullback: bullish candle at support",
                "accumulation": "Accumulation: steady buying volume", "squeeze": "Volatility squeeze: wide up day after a quiet spell"}
+UNIVERSE = list(SEED_TICKERS)  # re-read from the universe table at the start of every poll
 _bar_retry_at = 0.0  # time.monotonic() before which a failed or partial refresh is not tried again
 RETRY_SECONDS = 30 * 60
 MIN_SESSION_MINUTES = 30  # the volume projection is too noisy before this
@@ -73,6 +75,10 @@ def _refresh_bars(today, alerts):
         EarningsStore(Config.SQLITE_PATH).save(download_earnings(UNIVERSE, date.fromisoformat(today)))
     except Exception:
         logger.exception("Earnings refresh failed")
+    try:  # TradingView links need the exchange; new tickers get it here
+        fill_exchanges(universe_store())
+    except Exception:
+        logger.exception("Exchange lookup failed")
     try:
         _store_features(store, today)
     except Exception:
@@ -333,6 +339,8 @@ def _decided_today(alert, today):
 
 def lambda_handler(event, context):
     """Main orchestration function for the Trading Brain."""
+    global UNIVERSE
+    UNIVERSE = universe_tickers()  # an edit in Settings applies from the next poll
     api = ApiClient()
     llm = LlmClient()
     telegram = TelegramClient()
