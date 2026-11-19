@@ -14,7 +14,7 @@ from scoring.profiles import LONG_TERM, LONG_TERM_NOTE, SCORE_VERSION, SWING
 
 
 def build_opportunity(ticker, bars, features, results, regime, quality, earnings_day, today: date,
-                      max_holds=None, fundamentals=None) -> dict:
+                      max_holds=None, fundamentals=None, reliability=None) -> dict:
     """`results`: {strategy: latest result}; `quality`: data-quality status; `features` from features.build."""
     risk = assess(bars, results, regime, max_holds)
     comps = {
@@ -24,6 +24,7 @@ def build_opportunity(ticker, bars, features, results, regime, quality, earnings
         "relative_strength": c.relative_strength(features), "regime": c.regime(regime),
         "risk_reward": c.risk_reward(risk["riskReward"]),
         "alignment": c.alignment(features),
+        "reliability": _plan_reliability(risk["planSource"], reliability or {}),
     }
     agg = aggregate(comps, SWING, quality)
     stored = fundamentals or {}
@@ -40,6 +41,8 @@ def build_opportunity(ticker, bars, features, results, regime, quality, earnings
                            "checklist": r.get("checklist", [])}
                        for k, r in results.items() if r},
         "risk": risk, "dataQuality": quality, "timeframes": features.get("timeframes"),
+        "reliability": {"strategy": risk["planSource"], "score": comps["reliability"][0],
+                        "detail": comps["reliability"][1]},
         "longTerm": {"score": long_term["score"], "coverage": long_term["coverage"], "breakdown": long_term["breakdown"],
                      "metrics": c.fundamental_metrics(stored.get("values")) if stored else [],
                      "fetchedAt": stored.get("fetchedAt"), "note": LONG_TERM_NOTE}, "earningsDate": earnings_day.isoformat() if earnings_day else None,
@@ -47,6 +50,14 @@ def build_opportunity(ticker, bars, features, results, regime, quality, earnings
         "versions": {"score": SCORE_VERSION, "features": FEATURE_VERSION,
                      "strategies": {k: r.get("version") for k, r in results.items() if r}, "model": None},
     }
+
+
+def _plan_reliability(source, by_strategy):
+    """The reliability of the strategy whose plan is used; none for the default plan (weight 0 for now)."""
+    r = by_strategy.get(source)
+    if not r:
+        return None, "no strategy plan" if source in (None, "default") else "no backtest yet"
+    return r["score"], r["detail"]
 
 
 def rank(opportunities) -> list:

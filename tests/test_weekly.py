@@ -126,3 +126,19 @@ def test_analysis_route_fills_the_weekly_timeframe(monkeypatch):
     body = TestClient(api_main.create_app()).get("/api/v1/analysis/KO").json()
     assert body["timeframes"]["1w"] == {"trend": "neutral", "momentum": "positive", "score": None}
     assert body["timeframes"]["alignment"] == "partial"
+
+
+def test_study_labels_match_the_live_timeframes_on_every_day():
+    from backtesting.alignment_study import labels_by_date
+    from indicators import sma
+
+    days = trading_days("2026-01-02", "2026-11-13")
+    import math
+    bars = [day(d, 100 + i * 0.1 + 6 * math.sin(i / 9)) for i, d in enumerate(days)]
+    labels = labels_by_date(bars)
+    close = [b.close for b in bars]
+    s50, s200 = sma(close, 50), sma(close, 200)
+    for t in range(len(bars)):
+        live = timeframes(bars[:t + 1], trend_state(close[t], s50[t], s200[t]))["alignment"]
+        assert labels[bars[t].date] == live, bars[t].date
+    assert {v for v in labels.values()} - {None}  # some days carry a label

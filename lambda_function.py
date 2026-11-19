@@ -31,6 +31,7 @@ from strategies.history import HISTORY_BARS
 import time
 from datetime import date
 from market_data.fundamentals import FundamentalsStore, refresh_fundamentals
+from scoring.reliability import strategy_reliability
 from market_data.calendar import is_trading_day, previous_trading_day, session_minutes
 from strategies import macd, strategy_notes, volume
 from strategies.history import completed_bars
@@ -124,6 +125,7 @@ def _store_opportunities(bar_store, today):
     series = {name: {r["ticker"]: r for r in research.latest_results(name)} for name in SERIES}
     dates = earnings.get(UNIVERSE)
     funds = FundamentalsStore(Config.SQLITE_PATH).get(UNIVERSE)
+    rel = strategy_reliability(research, list(BACKTESTED))
     max_holds = {name: module.MAX_HOLD for name, module in SERIES.items()}
     rows = []
     for ticker in UNIVERSE:
@@ -135,7 +137,7 @@ def _store_opportunities(bar_store, today):
         report = bar_store.report(ticker)
         rows.append(build_opportunity(ticker, history, snapshot, results, regime_now,
                                       report["status"] if report else "valid", dates.get(ticker),
-                                      date.fromisoformat(today), max_holds, funds.get(ticker)))
+                                      date.fromisoformat(today), max_holds, funds.get(ticker), rel))
     OpportunityStore(Config.SQLITE_PATH).save(rows)
 
 

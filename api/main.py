@@ -704,6 +704,7 @@ STRATEGY_NAMES = {"breakout": "Breakout", "macd": "MACD trend", "mean_reversion"
 def _strategy_summary(store, strategy_id):
     from backtesting.metrics import trade_stats
     from backtesting.runner import MODULES
+    from scoring.reliability import strategy_reliability
 
     run = store.latest_run(strategy_id)
     live = store.outcomes(strategy_id)
@@ -713,6 +714,7 @@ def _strategy_summary(store, strategy_id):
         "backtest": None if run is None else {k: run[k] for k in
                                               ("id", "createdAt", "strategyVersion", "backtestVersion", "params", "result")},
         "live": {**stats, "open": sum(o.get("ret") is None for o in live)},
+        "reliability": strategy_reliability(store, [strategy_id])[strategy_id],
         "setups": [{k: r.get(k) for k in ("ticker", "asOf", "confidence", "newSetup", "label", "state")}
                    for r in store.latest_results(strategy_id) if r.get("direction") == "bullish"],
     }
