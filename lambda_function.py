@@ -48,6 +48,7 @@ SERIES_TEXT = {"trend": "Trend following: new setup", "breakout": "Breakout: clo
                "momentum": "Momentum: accelerating and ahead of SPY", "pullback": "Pullback: bullish candle at support",
                "accumulation": "Accumulation: steady buying volume", "squeeze": "Volatility squeeze: wide up day after a quiet spell"}
 UNIVERSE = list(SEED_TICKERS)  # re-read from the universe table at the start of every poll
+AGREEMENT_STRATEGIES = ("macd", "trend", "breakout", "mean_reversion")  # owner Q17, R6 plan
 _bar_retry_at = 0.0  # time.monotonic() before which a failed or partial refresh is not tried again
 RETRY_SECONDS = 30 * 60
 MIN_SESSION_MINUTES = 30  # the volume projection is too noisy before this
@@ -63,10 +64,17 @@ def _refresh_bars(today, alerts):
         return
     store = BarStore(Config.SQLITE_PATH)
     out = refresh_daily(store, date.fromisoformat(today), UNIVERSE + REFERENCE)
-    if out["failed"] or out.get("missing"):
+    missing = out.get("missing") or []
+    # A ticker with no stored history that Yahoo also left out is most likely unknown to Yahoo (a typo, or BRK.B
+    # for BRK-B): report it, but do not rerun the whole pass for it every 30 minutes all day.
+    unknown = [t for t in missing if store.newest_date(t) is None]
+    if unknown:
+        logger.warning("Yahoo has no bars for %s; check these tickers in the universe", ", ".join(unknown))
+    retry = [t for t in missing if t not in unknown]
+    if out["failed"] or retry:
         _bar_retry_at = time.monotonic() + RETRY_SECONDS
-        if out.get("missing"):
-            logger.warning("Bar refresh missing %s; retrying in 30 minutes", ", ".join(out["missing"]))
+        if retry:
+            logger.warning("Bar refresh missing %s; retrying in 30 minutes", ", ".join(retry))
         if out["failed"]:
             return
     else:
@@ -153,7 +161,7 @@ def _opportunity_facts(ticker):
     """The computed explanation for the AI prompt (owner Q15: the AI may only summarise these facts)."""
     if Config.STORAGE_BACKEND != "sqlite":
         return ""
-    o = next((x for x in OpportunityStore(Config.SQLITE_PATH).latest() if x["ticker"] == ticker), None)
+    o = OpportunityStore(Config.SQLITE_PATH).latest_for(ticker)
     if not o:
         return ""
     e = o["explanation"]
@@ -179,7 +187,7 @@ def _research_alerts(settings, telegram, today):
                 (o["qualityScore"] or 0) >= settings["scoreAlertMin"] and notices.mark_notice(f"score:{o['ticker']}:{today}"):
             top = "; ".join(o["explanation"]["positives"][:3]) or "no strong factor"
             texts.append(f"{o['ticker']} research score {o['qualityScore']:.0f} (not a probability): {top}.")
-        agree = [k for k, s in o["strategies"].items() if k != "volume" and (s["score"] or 0) >= 60]
+        agree = [k for k, s in o["strategies"].items() if k in AGREEMENT_STRATEGIES and (s["score"] or 0) >= 60]
         if settings.get("agreementAlertsEnabled") and len(agree) >= 2 and notices.mark_notice(f"agree:{o['ticker']}:{today}"):
             texts.append(f"{o['ticker']}: {len(agree)} strategies score 60 or more ({', '.join(sorted(agree))}).")
         for text in texts:

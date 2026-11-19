@@ -89,6 +89,13 @@ class OpportunityStore:
                                 (day, SCORE_VERSION)).fetchall() if day else []
         return rank([json.loads(r[0]) for r in rows])
 
+    def latest_for(self, ticker) -> dict | None:
+        """The ticker's newest opportunity, or None."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT doc FROM opportunities WHERE ticker = ? AND score_version = ? ORDER BY date DESC "
+                               "LIMIT 1", (ticker, SCORE_VERSION)).fetchone()
+        return json.loads(row[0]) if row else None
+
     def get(self, opportunity_id) -> dict | None:
         ticker, day = opportunity_id[:-11], opportunity_id[-10:]  # "<TICKER>-YYYY-MM-DD"; tickers can hold dashes
         with self._connect() as conn:

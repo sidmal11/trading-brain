@@ -657,7 +657,16 @@ def test_stored_bars_gone_stale_block_alerts_even_with_an_old_valid_report(poll)
     assert all(a["ticker"] != "NVDA" for a in alert_store().list_alerts())
 
 
+def _known(ticker):
+    """Give `ticker` stored history, so a missing download means Yahoo skipped it, not that it does not exist."""
+    from market_data.bar_store import BarStore
+    from market_data.bars import Bar
+
+    BarStore(Config.SQLITE_PATH).upsert(ticker, [Bar("2026-11-13", 11.0, 9.0, 10.0, 10.0, 1000, 10.0)])
+
+
 def test_partial_refresh_is_retried_later_not_marked_done(poll, monkeypatch):
+    _known("MSFT")
     calls = []
     monkeypatch.setattr(lambda_function, "refresh_daily",
                         lambda *a: calls.append(1) or {"failed": False, "missing": ["MSFT"]})
@@ -668,6 +677,17 @@ def test_partial_refresh_is_retried_later_not_marked_done(poll, monkeypatch):
     monkeypatch.setattr(lambda_function, "_bar_retry_at", 0.0)  # 30 minutes later
     lambda_function.lambda_handler({}, None)
     assert len(calls) == 2
+
+
+def test_a_ticker_yahoo_does_not_know_is_reported_not_retried_all_day(poll, monkeypatch, caplog):
+    calls = []
+    monkeypatch.setattr(lambda_function, "refresh_daily",
+                        lambda *a: calls.append(1) or {"failed": False, "missing": ["BRK.B"]})  # never had bars
+    monkeypatch.setattr(lambda_function, "_bar_retry_at", 0.0)
+    lambda_function.lambda_handler({}, None)
+    assert "2026-11-16" in lambda_function._bar_days and "Yahoo has no bars for BRK.B" in caplog.text
+    lambda_function.lambda_handler({}, None)
+    assert len(calls) == 1  # the day is done; no 30-minute reruns of the whole pass
 
 
 def test_a_refresh_error_does_not_stop_the_scan(poll, monkeypatch):

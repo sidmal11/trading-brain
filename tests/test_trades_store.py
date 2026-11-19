@@ -198,9 +198,10 @@ def test_a_buy_stranded_by_a_crash_no_longer_blocks_its_alert(tmp_path):
 
     store = TradesStore(str(tmp_path / "t.db"))
     stuck, _ = store.claim_buy("a1", "AAPL", 2, "2026-11-17")
-    assert store.live_buy("a1")["status"] == "PENDING"  # fresh: still in flight
+    assert store.fail_stranded() == 0 and store.live_buy("a1")["status"] == "PENDING"  # fresh: still in flight
     _age(store, stuck["id"], 121)
-    assert store.live_buy("a1") is None
+    assert store.live_buy("a1")["status"] == "PENDING"  # reading never writes
+    assert store.fail_stranded() == 1 and store.live_buy("a1") is None
     retry, created = store.claim_buy("a1", "AAPL", 2, "2026-11-17")
     assert created and retry["id"] != stuck["id"]
     assert [o["reason"] for o in store.list_orders() if o["id"] == stuck["id"]] == [STRANDED_REASON]
@@ -217,3 +218,21 @@ def test_a_stranded_order_no_longer_blocks_closing_the_ticker(tmp_path):
     _age(store, stuck["id"], 300)
     sell = store.claim_sell("AAPL", "2026-11-17")
     assert sell and sell["quantity"] == 2
+
+
+def test_api_start_fails_every_order_left_pending(tmp_path, monkeypatch):
+    """Only the API places orders, so at its start anything PENDING was cut off by the stop before it."""
+    from api import main as api_main
+    from api import trading
+    from config import Config
+    from utils.trades_store import STRANDED_REASON, TradesStore
+
+    store = TradesStore(str(tmp_path / "t.db"))
+    fresh, _ = store.claim_buy("a1", "AAPL", 2, "2026-11-17")  # seconds old: the 2-minute rule would keep it
+    monkeypatch.setattr(Config, "STORAGE_BACKEND", "sqlite")
+    monkeypatch.setattr(Config, "SQLITE_PATH", str(tmp_path / "s.db"))
+    monkeypatch.setattr(Config, "ALLOW_UNAUTHENTICATED", True)
+    monkeypatch.setattr(Config, "AUTH_MODE", "")
+    monkeypatch.setattr(trading, "get_trades_store", lambda: store)
+    api_main.create_app()
+    assert [(o["status"], o["reason"]) for o in store.list_orders() if o["id"] == fresh["id"]] == [("FAILED", STRANDED_REASON)]

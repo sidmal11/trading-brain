@@ -30,6 +30,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTask
 from typing import List, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -634,6 +635,7 @@ def _worth_telling(reason):
 
 @router.post("/alerts/{alert_id}/review")
 def review_alert(
+    background: BackgroundTasks,
     alert_id: str = Path(..., min_length=1),
     body: ReviewRequest = Body(...),
     db=Depends(get_db),
@@ -657,7 +659,10 @@ def review_alert(
             raise trading.DecisionNotRecorded(alert_id)
     except trading.TradeRefused as refused:
         if body.decision == "APPROVED" and _worth_telling(refused.reason):
-            notify.admins(notify.refused_text(existing.get("ticker", ""), refused.reason))
+            # A raised HTTPException drops queued background tasks, so the 409 carries its own send.
+            return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": refused.reason},
+                                background=BackgroundTask(notify.admins,
+                                                          notify.refused_text(existing.get("ticker", ""), refused.reason)))
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
     except trading.DecisionNotRecorded:
         raise HTTPException(
@@ -665,7 +670,7 @@ def review_alert(
             detail="Could not record the decision.",
         )
     if order is not None and order["status"] == "FILLED" and existing.get("status") != "APPROVED":
-        notify.admins(notify.bought_text(order, existing))  # a repeat approval of a bought alert sends nothing
+        background.add_task(notify.admins, notify.bought_text(order, existing))  # a repeat approval sends nothing
 
     # Mirror the decision onto the Telegram message so the two surfaces agree.
     # A failure here is logged inside the client and must not fail the request:
@@ -769,7 +774,7 @@ def get_performance():
 
 
 @router.post("/positions/{ticker}/close")
-def close_position(ticker: str = Path(..., min_length=1, max_length=16)):
+def close_position(background: BackgroundTasks, ticker: str = Path(..., min_length=1, max_length=16)):
     if Config.STORAGE_BACKEND != "sqlite":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No open position.")
     ticker = ticker.upper()
@@ -777,7 +782,7 @@ def close_position(ticker: str = Path(..., min_length=1, max_length=16)):
         held = next((p for p in trading.get_trades_store().open_positions() if p["ticker"] == ticker), None)
         order = trading.close_position(ticker)
         if order and order.get("status") == "FILLED":
-            notify.admins(notify.sold_text(order, held["costBasis"] if held else None))
+            background.add_task(notify.admins, notify.sold_text(order, held["costBasis"] if held else None))
         return order
     except LookupError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No open position.")
@@ -1116,6 +1121,10 @@ def _handle_command(message, subscribers):
 
 def create_app() -> FastAPI:
     get_broker(lambda ticker: None)  # refuses any broker other than the mock
+    if Config.STORAGE_BACKEND == "sqlite":
+        stranded = trading.get_trades_store().fail_stranded(0)  # cut off by the stop before this start
+        if stranded:
+            logger.warning("Marked %d order(s) left PENDING by the last stop as FAILED", stranded)
     # Refuse to start with email login half-configured: a missing secret or an
     # empty allow-list would leave the dashboard open or unable to sign anyone in.
     if email_otp_enabled():

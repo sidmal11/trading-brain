@@ -98,8 +98,7 @@ class OtpStore:
             conn.execute("DELETE FROM otp_sessions WHERE token_hash = ?", (token_hash,))
 
 
-def _normalise(email: str) -> str:
-    return (email or "").strip().lower()
+from .access import normalise as _normalise  # noqa: E402  (one rule for sign-in and the access list)
 
 
 def _code_hash(email: str, code: str) -> str:

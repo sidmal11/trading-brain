@@ -128,7 +128,7 @@ def fundamental_metrics(v) -> list:
         ("operatingMargins", "Operating margin %", pct("operatingMargins"), _tier(pct("operatingMargins"), 15, 5)),
         ("profitMargins", "Net margin %", pct("profitMargins"), _tier(pct("profitMargins"), 10, 3)),
         ("returnOnEquity", "Return on equity %", pct("returnOnEquity"), _tier(pct("returnOnEquity"), 15, 8)),
-        ("debtToEquity", "Debt to equity %", v.get("debtToEquity"), _tier(v.get("debtToEquity"), 100, 200, higher=False)),
+        ("debtToEquity", "Debt to equity %", v.get("debtToEquity"), _multiple(v.get("debtToEquity"), 100, 200)),
         ("currentRatio", "Current ratio", v.get("currentRatio"), _tier(v.get("currentRatio"), 1.5, 1)),
         ("freeCashflow", "Free cash flow", fcf, None if fcf is None else 100 if fcf > 0 else 0),
         ("trailingPE", "P/E", v.get("trailingPE"), _multiple(v.get("trailingPE"), 20, 35)),

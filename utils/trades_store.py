@@ -47,11 +47,17 @@ class TradesStore:
         return sqlite3.connect(self.path, timeout=10)
 
     @staticmethod
-    def _fail_stranded(conn):
+    def _fail_stranded(conn, seconds=STRANDED_SECONDS):
         """A mock fill takes milliseconds, so an order PENDING this long was cut off by a crash or restart."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STRANDED_SECONDS)).isoformat()
-        conn.execute("UPDATE orders SET status = 'FAILED', reason = ? WHERE status = 'PENDING' AND created_at < ?",
-                     (STRANDED_REASON, cutoff))
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+        return conn.execute("UPDATE orders SET status = 'FAILED', reason = ? WHERE status = 'PENDING' "
+                            "AND created_at < ?", (STRANDED_REASON, cutoff)).rowcount
+
+    def fail_stranded(self, seconds=STRANDED_SECONDS) -> int:
+        """Fail every order PENDING longer than `seconds`. The API calls this with 0 at start-up: only the one API
+        process places orders, so whatever is PENDING when it starts was cut off by the stop before it."""
+        with self._lock, self._connect() as conn:
+            return self._fail_stranded(conn, seconds)
 
     def _get(self, conn, order_id):
         return _wire(conn.execute(f"{_SELECT} WHERE id = ?", (order_id,)).fetchone())
@@ -86,9 +92,8 @@ class TradesStore:
                 # The conflicting buy was marked FAILED in between: retry the insert once.
 
     def live_buy(self, alert_id):
-        """The alert's buy that is pending or filled, or None. A stranded pending buy is failed first."""
-        with self._lock, self._connect() as conn:
-            self._fail_stranded(conn)
+        """The alert's buy that is pending or filled, or None. Read only: the dashboard calls it on every poll."""
+        with self._connect() as conn:
             return self._live_buy(conn, alert_id)
 
     def _live_buy(self, conn, alert_id):
