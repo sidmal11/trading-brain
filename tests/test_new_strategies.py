@@ -1,4 +1,4 @@
-"""Trend following, breakout and mean reversion (rule sheets 1, 3, 6): BUY scenarios on hand-built bars,
+"""The series strategies (rule sheets 1 to 7): BUY scenarios on hand-built bars,
 neutral cases, and point in time (bar t from the full history equals the last result from bars[:t+1])."""
 import math
 import random
@@ -11,10 +11,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from market_data.bars import Bar  # noqa: E402
-from strategies import breakout, mean_reversion, trend  # noqa: E402
+from strategies import accumulation, breakout, mean_reversion, momentum, pullback, squeeze, trend  # noqa: E402
 from strategies.common import finish, item  # noqa: E402
 
-MODULES = (trend, breakout, mean_reversion)
+MODULES = (trend, breakout, mean_reversion, momentum, pullback, accumulation, squeeze)
 
 
 def days(n):
@@ -103,7 +103,7 @@ def test_no_trade_when_the_target_is_not_above_the_entry():
 
 @pytest.mark.parametrize("module", MODULES)
 def test_too_little_history_is_neutral_not_an_error(module):
-    last = module.evaluate_series(walk(100))[-1]
+    last = module.evaluate_series(walk(min(100, module.WARMUP)))[-1]
     assert last["direction"] == "neutral" and all(x["detail"] == "Not enough history" for x in last["checklist"])
 
 
@@ -121,3 +121,100 @@ def test_results_carry_the_contract(module):
     assert r["strategy"] == module.NAME and r["version"] == "1" and r["signalType"] == module.SIGNAL_TYPE
     assert {"evidence", "contradictions", "entryPrice", "stopPrice", "targetPrice", "asOf", "confidence"} <= set(r)
     assert sum(x["points"] for x in r["checklist"]) == 100
+
+
+@pytest.mark.parametrize("module", MODULES)
+def test_a_buy_always_has_its_buy_checks(module):
+    for r in module.evaluate_series(walk(600, 5), walk(600, 6)):
+        passed = {x["key"] for x in r["checklist"] if x["passed"]}
+        if r["direction"] == "bullish":
+            assert set(module.BUY_KEYS) <= passed and r["stopPrice"] < r["entryPrice"] < r["targetPrice"]
+
+
+def test_momentum_buys_accelerating_strength_ahead_of_spy():
+    rng = random.Random(3)
+    c = [100 + rng.gauss(0, 0.3) for _ in range(100)] + [100 * 1.0005 ** (i * i / 10) for i in range(1, 25)]
+    last = momentum.evaluate_series(mk(c, spread=0.004), mk([100.0] * len(c)))[-1]
+    assert last["direction"] == "bullish"
+    passed = {x["key"] for x in last["checklist"] if x["passed"]}
+    assert {"macd", "relative", "rising"} <= passed and "rsi" not in passed  # RSI near 100 is stretched
+
+
+def test_momentum_needs_spy_and_a_third_check():
+    for r in momentum.evaluate_series(walk(400, 7), None):
+        assert r["direction"] == "neutral"  # without SPY the relative check cannot pass
+    for r in momentum.evaluate_series(walk(600, 5), walk(600, 6)):
+        if r["direction"] == "bullish":
+            assert sum(x["passed"] for x in r["checklist"]) >= 3
+
+
+def sawtooth(cycles=10):
+    c, p = [], 100.0
+    for _ in range(cycles):
+        for _ in range(8):
+            p += 2
+            c.append(p)
+        for _ in range(4):
+            p -= 1.5
+            c.append(p)
+    return c
+
+
+def test_pullback_buys_a_bullish_engulfing_at_the_20_day_ema_in_an_uptrend():
+    c = sawtooth()
+    last = pullback.evaluate_series(mk(c + [c[-2] + 0.5], spread=0.003))[-1]  # opens at the low, closes over it
+    assert last["direction"] == "bullish" and "bullish_engulfing" in last["checklist"][2]["detail"]
+    low3 = min(b.low for b in mk(c + [c[-2] + 0.5], spread=0.003)[-3:])
+    assert last["stopPrice"] < low3
+
+
+def test_pullback_without_a_bullish_candle_is_not_a_buy():
+    c = sawtooth()
+    last = pullback.evaluate_series(mk(c + [c[-1] + 0.2], spread=0.003))[-1]  # small up day, no engulfing
+    assert last["direction"] == "neutral"
+
+
+def accumulating(missing=False):
+    rng, c, v, p = random.Random(4), [], [], 100.0
+    for _ in range(120):
+        up = rng.random() < 0.6
+        p *= 1.01 if up else 0.993
+        c.append(p)
+        v.append(2e6 if up else 0.8e6)
+    c[-1], v[-1] = c[-2] * 1.01, 4e6
+    if missing:
+        v[-10] = None
+    return mk(c, v, spread=0.004)
+
+
+def test_accumulation_buys_steady_buying_volume_in_an_uptrend():
+    last = accumulation.evaluate_series(accumulating())[-1]
+    passed = {x["key"] for x in last["checklist"] if x["passed"]}
+    assert last["direction"] == "bullish" and {"obv", "cmf", "ma", "surge"} <= passed
+
+
+def test_accumulation_with_a_missing_volume_never_buys():
+    last = accumulation.evaluate_series(accumulating(missing=True))[-1]
+    assert last["direction"] == "neutral" and last["checklist"][0]["detail"] == "No volume reading"
+
+
+def squeeze_bars(close_at=0.999):
+    rng = random.Random(1)
+    c = [100 * (1 + 0.02 * math.sin(i / 7)) + rng.gauss(0, 1.5) for i in range(280)]
+    c += [101 + rng.gauss(0, 0.2) for _ in range(20)]
+    bars = mk(c, spread=0.003)
+    p = bars[-1].close
+    day = days(len(bars) + 1)[-1]
+    return bars + [Bar(day, p * 1.04, p * 0.999, p * (1.04 * close_at), p, 1e6, p)]
+
+
+def test_squeeze_buys_a_wide_up_day_after_a_quiet_spell_with_the_stop_at_the_low():
+    bars = squeeze_bars()
+    last = squeeze.evaluate_series(bars)[-1]
+    assert last["direction"] == "bullish" and last["confidence"] == 100
+    assert last["stopPrice"] == pytest.approx(bars[-1].low, abs=0.01)
+
+
+def test_squeeze_with_a_weak_close_is_not_a_buy():
+    last = squeeze.evaluate_series(squeeze_bars(close_at=0.97))[-1]  # closes in the middle of the range
+    assert last["direction"] == "neutral" and not last["checklist"][2]["passed"]

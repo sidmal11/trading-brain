@@ -41,7 +41,9 @@ _bar_days = set()  # trading dates whose bar refresh succeeded in this process
 _backtest_days = set()  # Saturdays whose weekly backtests ran in this process
 _series_days = set()  # (date, strategy) pairs whose request pass finished in this process
 SERIES_TEXT = {"trend": "Trend following: new setup", "breakout": "Breakout: closing break of a 20-day high",
-               "mean_reversion": "Mean reversion: first up day after a dip"}
+               "mean_reversion": "Mean reversion: first up day after a dip",
+               "momentum": "Momentum: accelerating and ahead of SPY", "pullback": "Pullback: bullish candle at support",
+               "accumulation": "Accumulation: steady buying volume", "squeeze": "Volatility squeeze: wide up day after a quiet spell"}
 _bar_retry_at = 0.0  # time.monotonic() before which a failed or partial refresh is not tried again
 RETRY_SECONDS = 30 * 60
 MIN_SESSION_MINUTES = 30  # the volume projection is too noisy before this

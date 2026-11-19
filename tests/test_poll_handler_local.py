@@ -622,7 +622,8 @@ def test_saturday_poll_runs_both_backtests_once(poll, monkeypatch):
     monkeypatch.setattr(lambda_function, "run_and_store", lambda bars, store, strategy, tickers, today: runs.append(strategy))
     lambda_function.lambda_handler({}, None)
     lambda_function.lambda_handler({}, None)
-    assert sorted(runs) == ["breakout", "macd", "mean_reversion", "trend", "volume"]
+    assert sorted(runs) == ["accumulation", "breakout", "macd", "mean_reversion", "momentum", "pullback", "squeeze",
+                           "trend", "volume"]
 
 
 def test_weekday_poll_runs_no_backtest(poll, monkeypatch):

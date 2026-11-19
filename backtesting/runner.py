@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 from backtesting.metrics import buy_and_hold, equity_stats, trade_stats
 from backtesting.simulator import CostModel, simulate
-from strategies import breakout, macd, mean_reversion, trend, volume
+from strategies import accumulation, breakout, macd, mean_reversion, momentum, pullback, squeeze, trend, volume
 from strategies.history import HISTORY_BARS
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,8 @@ BACKTEST_VERSION = "1"
 VOLUME_THRESHOLD = 3.0  # the live default
 HOLDOUT_DAYS = 365  # owner, Q9: the last 12 months are out of sample
 CAPITAL = 10_000.0  # the mock account's starting cash; each trade is CostModel.notional of it
-MODULES = {"volume": volume, "macd": macd, "trend": trend, "breakout": breakout, "mean_reversion": mean_reversion}
+MODULES = {"volume": volume, "macd": macd, "trend": trend, "breakout": breakout, "mean_reversion": mean_reversion,
+           "momentum": momentum, "pullback": pullback, "accumulation": accumulation, "squeeze": squeeze}
 SERIES = {k: m for k, m in MODULES.items() if hasattr(m, "evaluate_series")}  # whole-history strategies
 COOLDOWN = {"volume": 0, "macd": 3}  # live: one MACD alert per crossover, which stays "recent" for 3 bars
 CAVEATS = [

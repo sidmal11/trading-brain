@@ -114,7 +114,8 @@ class SettingsIn(BaseModel):
     scoreAlertsEnabled: bool = False
     scoreAlertMin: int = Field(75, ge=50, le=100)
     agreementAlertsEnabled: bool = False
-    requestStrategies: List[Literal["macd", "volume", "trend", "breakout", "mean_reversion"]]
+    requestStrategies: List[Literal["macd", "volume", "trend", "breakout", "mean_reversion", "momentum", "pullback",
+                                    "accumulation", "squeeze"]]
 
     @field_validator("markets")
     @classmethod
@@ -291,7 +292,7 @@ def put_settings(body: SettingsIn):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Settings can only be saved with the SQLite storage backend.",
         )
-    gated = [s for s in body.requestStrategies if s in ("trend", "breakout", "mean_reversion")]
+    gated = [s for s in body.requestStrategies if s not in ("macd", "volume")]
     if gated:  # owner, Q18: a new strategy sends buy requests only after its backtest exists
         from backtesting.store import ResearchStore
 
@@ -598,7 +599,8 @@ def get_data_quality():
 
 
 STRATEGY_NAMES = {"breakout": "Breakout", "macd": "MACD trend", "mean_reversion": "Mean reversion",
-                  "trend": "Trend following", "volume": "Volume surge"}
+                  "trend": "Trend following", "volume": "Volume surge", "momentum": "Momentum",
+                  "pullback": "Price action pullback", "accumulation": "Volume accumulation", "squeeze": "Volatility squeeze"}
 
 
 def _strategy_summary(store, strategy_id):

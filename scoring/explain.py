@@ -5,7 +5,8 @@ from market_data.calendar import previous_trading_day
 from scoring.profiles import GATES, LABELS
 
 STRATEGY_LABELS = {"macd": "MACD trend", "trend": "Trend following", "breakout": "Breakout",
-                   "mean_reversion": "Mean reversion"}
+                   "mean_reversion": "Mean reversion", "momentum": "Momentum", "pullback": "Price action pullback",
+                   "accumulation": "Volume accumulation", "squeeze": "Volatility squeeze"}
 
 
 def gates(risk, coverage, quality, newest_bar, today: date) -> list:

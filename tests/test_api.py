@@ -444,9 +444,10 @@ def research(client, monkeypatch, tmp_path):
 
 def test_strategies_list_without_runs(client, research):
     rows = client.get("/api/v1/strategies").json()
-    assert [r["id"] for r in rows] == ["breakout", "macd", "mean_reversion", "trend", "volume"]
+    assert [r["id"] for r in rows] == ["accumulation", "breakout", "macd", "mean_reversion", "momentum", "pullback", "squeeze",
+                                    "trend", "volume"]
     assert all(r["backtest"] is None and r["live"]["trades"] == 0 and r["live"]["winRate"] is None for r in rows)
-    assert rows[1]["name"] == "MACD trend" and rows[1]["version"] == "1" and rows[3]["name"] == "Trend following"
+    assert rows[2]["name"] == "MACD trend" and rows[2]["version"] == "1" and rows[7]["name"] == "Trend following"
     assert all(r["setups"] == [] for r in rows)
 
 
