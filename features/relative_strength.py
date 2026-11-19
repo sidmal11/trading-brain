@@ -12,6 +12,18 @@ SECTOR_ETF = {
     "WMT": "XLP", "COST": "XLP",
     "JPM": "XLF", "BAC": "XLF", "GS": "XLF", "V": "XLF", "MA": "XLF", "PYPL": "XLF",
     "XOM": "XLE", "CVX": "XLE",
+    # Added with the P3 universe, read from Yahoo 2026-11-19 (Yahoo lists IREN under Financial Services).
+    "CRWV": "XLK", "APLD": "XLK", "DELL": "XLK", "SMCI": "XLK", "ANET": "XLK", "NOW": "XLK", "PLTR": "XLK",
+    "SNOW": "XLK", "CRWD": "XLK", "PANW": "XLK",
+    "TSM": "SMH", "ARM": "SMH", "MU": "SMH", "QCOM": "SMH", "ASML": "SMH", "AMAT": "SMH", "LRCX": "SMH",
+    "NBIS": "XLC", "SPOT": "XLC",
+    "IREN": "XLF", "MS": "XLF",
+    "VST": "XLU", "CEG": "XLU", "NEE": "XLU",
+    "COP": "XLE", "OXY": "XLE", "SLB": "XLE",
+    "LOW": "XLY", "MCD": "XLY",
+    "TGT": "XLP", "PG": "XLP", "KO": "XLP",
+    "LLY": "XLV", "UNH": "XLV", "JNJ": "XLV", "ABBV": "XLV", "PFE": "XLV",
+    "CAT": "XLI", "GE": "XLI", "BA": "XLI", "LMT": "XLI", "RTX": "XLI",
 }
 
 

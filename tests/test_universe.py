@@ -112,3 +112,12 @@ def test_opportunities_carry_domain_and_exchange(client, monkeypatch):
     got = client.get("/api/v1/opportunities").json()
     assert (got[0]["domain"], got[0]["exchange"]) == ("AI chips and semiconductors", "NASDAQ")
     assert (got[1]["domain"], got[1]["exchange"]) == (None, None)  # dropped from the universe since scoring
+
+
+def test_every_seeded_stock_compares_with_a_stored_sector_fund():
+    from features.relative_strength import SECTOR_ETF
+    from utils.api_client import REFERENCE
+
+    stocks = [t for d, ts in SEED.items() if d != "Market ETFs" for t in ts]
+    assert [t for t in stocks if t not in SECTOR_ETF] == []
+    assert {SECTOR_ETF[t] for t in stocks} <= set(REFERENCE)
