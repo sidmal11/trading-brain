@@ -808,8 +808,23 @@ def test_enabled_series_strategy_requests_only_a_new_setup(poll, monkeypatch):
     base = settings_store.defaults()
     monkeypatch.setattr(lambda_function, "effective_settings",
                         lambda: {**base, "volumeThreshold": 99.0, "requestStrategies": ["mean_reversion"]})
+    monkeypatch.setattr(lambda_function, "_gated_tickers", lambda: {})  # the gates have their own test below
     lambda_function.lambda_handler({}, None)
     lambda_function.lambda_handler({}, None)  # once per day
     alerts = [a for a in alert_store().list_alerts() if a["strategy"] == "mean_reversion"]
     assert len(alerts) == 1 and alerts[0]["ticker"] == "AAPL" and alerts[0]["status"] == "PENDING"
     assert alerts[0]["signalType"] == "MEAN_REVERSION"
+
+
+def test_a_ticker_that_fails_a_gate_gets_no_request(poll, monkeypatch):
+    from scoring.opportunity import OpportunityStore
+    from utils import settings_store
+
+    OpportunityStore(Config.SQLITE_PATH).save([{"id": "NVDA-2026-11-13", "ticker": "NVDA", "asOf": "2026-11-13",
+                                                 "eligible": False, "qualityScore": 90,
+                                                 "explanation": {"gatesFailed": ["Too volatile: ATR 9.1% of price (max 8%)"]}}])
+    base = settings_store.defaults()
+    monkeypatch.setattr(lambda_function, "effective_settings",
+                        lambda: {**base, "volumeThreshold": 1.0, "requestStrategies": ["macd", "volume"]})
+    lambda_function.lambda_handler({}, None)
+    assert all(a["ticker"] != "NVDA" for a in alert_store().list_alerts())

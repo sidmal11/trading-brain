@@ -23,6 +23,9 @@ from utils.health import HealthStore
 from utils.llm_client import FAILED_TEXT
 from features.build import FeatureStore, build_features
 from features.relative_strength import SECTOR_ETF
+from features.regime import regime as market_regime
+from scoring.opportunity import OpportunityStore, build_opportunity
+from strategies.indicators import checklist, macd_buy
 from strategies.history import HISTORY_BARS
 import time
 from datetime import date
@@ -76,6 +79,10 @@ def _refresh_bars(today, alerts):
         _store_setups(store, today)
     except Exception:
         logger.exception("Strategy setups failed")
+    try:
+        _store_opportunities(store, today)
+    except Exception:
+        logger.exception("Opportunity scoring failed")
 
 
 def _store_features(bar_store, today):
@@ -86,6 +93,84 @@ def _store_features(bar_store, today):
         if bars.get(ticker):
             etf = SECTOR_ETF.get(ticker)
             features.save(ticker, build_features(bars[ticker][-HISTORY_BARS:], spy, bars.get(etf) if etf else None, etf))
+
+
+def _macd_result(bars):
+    """The MACD checklist as a strategy result for scoring (no live volume reading in the daily pass)."""
+    r = checklist(bars, None, False, "Not measured in the daily pass")
+    tradable = None not in (r["stopPrice"], r["targetPrice"])
+    return {**r, "strategy": "macd", "version": macd.VERSION,
+            "direction": "bullish" if macd_buy(r) and tradable else "neutral"}
+
+
+def _store_opportunities(bar_store, today):
+    """After the features and setups: one scored, gated, explained opportunity per universe ticker."""
+    bars = bar_store.daily(UNIVERSE + ["SPY"], before=today)
+    regime_now = market_regime(bars.get("SPY", []))
+    research, features, earnings = ResearchStore(Config.SQLITE_PATH), FeatureStore(Config.SQLITE_PATH), EarningsStore(Config.SQLITE_PATH)
+    series = {name: {r["ticker"]: r for r in research.latest_results(name)} for name in SERIES}
+    dates = earnings.get(UNIVERSE)
+    max_holds = {name: module.MAX_HOLD for name, module in SERIES.items()}
+    rows = []
+    for ticker in UNIVERSE:
+        history, snapshot = bars.get(ticker), features.latest(ticker)
+        if not history or not snapshot:
+            continue
+        results = {name: by_ticker.get(ticker) for name, by_ticker in series.items()}
+        results["macd"] = _macd_result(history[-HISTORY_BARS:])
+        report = bar_store.report(ticker)
+        rows.append(build_opportunity(ticker, history, snapshot, results, regime_now,
+                                      report["status"] if report else "valid", dates.get(ticker),
+                                      date.fromisoformat(today), max_holds))
+    OpportunityStore(Config.SQLITE_PATH).save(rows)
+
+
+def _gated_tickers():
+    """{ticker: failed gates} from the latest opportunities: these tickers get no alert of any kind."""
+    if Config.STORAGE_BACKEND != "sqlite":
+        return {}
+    return {o["ticker"]: o["explanation"]["gatesFailed"] for o in OpportunityStore(Config.SQLITE_PATH).latest()
+            if not o["eligible"]}
+
+
+def _opportunity_facts(ticker):
+    """The computed explanation for the AI prompt (owner Q15: the AI may only summarise these facts)."""
+    if Config.STORAGE_BACKEND != "sqlite":
+        return ""
+    o = next((x for x in OpportunityStore(Config.SQLITE_PATH).latest() if x["ticker"] == ticker), None)
+    if not o:
+        return ""
+    e = o["explanation"]
+    lines = [f"Research score {o['qualityScore']} of 100 (a score, not a probability)."]
+    for title, items in (("Positive", e["positives"]), ("Negative", e["negatives"]), ("Agreeing strategies", e["agreeing"]),
+                         ("Missing", e["missing"]), ("Warnings", e["warnings"]), ("Risks", e["risks"])):
+        if items:
+            lines.append(f"{title}: " + "; ".join(items))
+    return "\n\nComputed facts (summarise only these; add nothing):\n" + "\n".join(lines)
+
+
+def _research_alerts(settings, telegram, today):
+    """Opt-in Telegram notes (owner Q17): high scores and strategy agreement. Information only; once a day each."""
+    if Config.STORAGE_BACKEND != "sqlite" or not telegram.is_configured or not (
+            settings.get("scoreAlertsEnabled") or settings.get("agreementAlertsEnabled")):
+        return []
+    notices, sent = alert_store(), []
+    for o in OpportunityStore(Config.SQLITE_PATH).latest():
+        if not o["eligible"]:
+            continue
+        texts = []
+        if settings.get("scoreAlertsEnabled") and o["direction"] == "bullish" and \
+                (o["qualityScore"] or 0) >= settings["scoreAlertMin"] and notices.mark_notice(f"score:{o['ticker']}:{today}"):
+            top = "; ".join(o["explanation"]["positives"][:3]) or "no strong factor"
+            texts.append(f"{o['ticker']} research score {o['qualityScore']:.0f} (not a probability): {top}.")
+        agree = [k for k, s in o["strategies"].items() if k != "volume" and (s["score"] or 0) >= 60]
+        if settings.get("agreementAlertsEnabled") and len(agree) >= 2 and notices.mark_notice(f"agree:{o['ticker']}:{today}"):
+            texts.append(f"{o['ticker']}: {len(agree)} strategies score 60 or more ({', '.join(sorted(agree))}).")
+        for text in texts:
+            for chat_id in sorted(telegram.admin_chat_ids):
+                telegram.send_text(chat_id, text)
+            sent.append(text)
+    return sent
 
 
 def _store_setups(bar_store, today):
@@ -282,6 +367,10 @@ def lambda_handler(event, context):
     if fraction * (session_minutes(date.fromisoformat(today)) or 390) < MIN_SESSION_MINUTES:
         logger.info("Too early in the session; skipping scan.")
         return {"statusCode": 200, "body": "Too early in the session; skipping scan."}
+    try:  # in the session only, so a note never arrives at night or on a closed day
+        _research_alerts(settings, telegram, today)
+    except Exception:
+        logger.exception("Research alerts failed")
 
     logger.info("Starting market scan poll...")
     
@@ -308,7 +397,7 @@ def lambda_handler(event, context):
 
         # 4. Generate Pros/Cons with LLM
         analysis = llm.analyze_stock(ticker, signal_desc, stock_data, checklist=sig["checklist"],
-                                     strategy_notes=strategy_notes(sig["strategy"]))
+                                     strategy_notes=strategy_notes(sig["strategy"]) + _opportunity_facts(ticker))
         _record_ai(analysis)
         passed = sum(x["passed"] for x in sig["checklist"])
         conditions = f"{signal_desc}\nConditions met: {passed} of 5 ({sig['confidence']} points)"
@@ -358,7 +447,7 @@ def lambda_handler(event, context):
         if requestable:  # an INFO alert is not an open request, so it never blocks one
             held.add(ticker)
         return requestable
-    for ticker, issues in _invalid_tickers(today).items():
+    for ticker, issues in {**_invalid_tickers(today), **_gated_tickers()}.items():
         logger.info("%s skipped: %s", ticker, "; ".join(issues))
         held.add(ticker)
 

@@ -111,6 +111,9 @@ class SettingsIn(BaseModel):
     maxChasePct: float = Field(ge=0.5, le=20)
     riskPerTrade: float = Field(ge=1, le=5000)
     stopAlertPct: float = Field(ge=0.1, le=20)
+    scoreAlertsEnabled: bool = False
+    scoreAlertMin: int = Field(75, ge=50, le=100)
+    agreementAlertsEnabled: bool = False
     requestStrategies: List[Literal["macd", "volume", "trend", "breakout", "mean_reversion"]]
 
     @field_validator("markets")
@@ -367,6 +370,85 @@ def get_regime():
     from market_data.bar_store import BarStore
 
     return regime(BarStore(Config.SQLITE_PATH).daily(["SPY"], before=trading_date()).get("SPY", []))
+
+
+class AnalysisOut(BaseModel):
+    """The standard per-ticker analysis object (DAE 16). Scores are research scores, never probabilities."""
+    symbol: str
+    analysis_timestamp: str | None
+    timeframes: dict
+    strategy_scores: dict
+    overall: dict
+    risk: dict
+    data_quality: dict
+    explanations: List[str]
+    warnings: List[str]
+    versions: dict
+
+
+def _opportunities():
+    if Config.STORAGE_BACKEND != "sqlite":
+        return []
+    from scoring.opportunity import OpportunityStore
+
+    return OpportunityStore(Config.SQLITE_PATH).latest()
+
+
+@router.get("/opportunities")
+def get_opportunities(
+    eligible: bool | None = Query(None),
+    min_score: float | None = Query(None, alias="minScore", ge=0, le=100),
+    strategy: str | None = Query(None, max_length=32),
+    min_risk_reward: float | None = Query(None, alias="minRiskReward", ge=0),
+    data_quality: str | None = Query(None, alias="dataQuality", pattern="^(valid|warn|invalid)$"),
+):
+    """The latest day's opportunities, eligible first and by research score; filters narrow the list."""
+    rows = _opportunities()
+    if eligible is not None:
+        rows = [o for o in rows if o["eligible"] == eligible]
+    if min_score is not None:
+        rows = [o for o in rows if (o["qualityScore"] or 0) >= min_score]
+    if strategy:
+        rows = [o for o in rows if o["strategies"].get(strategy, {}).get("direction") == "bullish"]
+    if min_risk_reward is not None:
+        rows = [o for o in rows if (o["risk"]["riskReward"] or 0) >= min_risk_reward]
+    if data_quality:
+        rows = [o for o in rows if o["dataQuality"] == data_quality]
+    return [{**o, "rank": i + 1} for i, o in enumerate(rows)]
+
+
+@router.get("/opportunities/{opportunity_id}/explanation")
+def get_opportunity_explanation(opportunity_id: str = Path(..., max_length=40)):
+    from scoring.opportunity import OpportunityStore
+
+    o = OpportunityStore(Config.SQLITE_PATH).get(opportunity_id) if Config.STORAGE_BACKEND == "sqlite" else None
+    if not o:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown opportunity.")
+    return {"id": o["id"], "ticker": o["ticker"], "qualityScore": o["qualityScore"], **o["explanation"]}
+
+
+@router.get("/analysis/{ticker}", response_model=AnalysisOut)
+def get_analysis(ticker: str = Path(..., pattern=r"^[A-Za-z0-9.\-]{1,10}$")):
+    ticker = ticker.upper()
+    o = next((x for x in _opportunities() if x["ticker"] == ticker), None)
+    if not o:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No analysis yet for {ticker}.")
+    e = o["explanation"]
+    trend_score = next((r["score"] for r in o["breakdown"] if r["component"] == "trend"), None)
+    momentum_score = next((r["score"] for r in o["breakdown"] if r["component"] == "momentum"), None)
+    word = lambda s: None if s is None else "positive" if s >= 60 else "negative" if s < 40 else "neutral"  # noqa: E731
+    return {
+        "symbol": ticker, "analysis_timestamp": o["asOf"],
+        "timeframes": {"1d": {"trend": word(trend_score), "momentum": word(momentum_score), "score": o["qualityScore"]}},
+        "strategy_scores": {k: s["score"] for k, s in o["strategies"].items()},
+        "overall": {"direction": o["direction"], "quality_score": o["qualityScore"], "calibrated_probability": None},
+        "risk": {"risk_reward_ratio": o["risk"]["riskReward"], "risk_status": "eligible" if o["eligible"] else "blocked",
+                 "plan_source": o["risk"]["planSource"]},
+        "data_quality": {"status": o["dataQuality"], "coverage": o["coverage"]},
+        "explanations": e["positives"] + e["negatives"], "warnings": e["warnings"] + e["gatesFailed"],
+        "versions": {"feature_version": o["versions"]["features"], "strategy_versions": o["versions"]["strategies"],
+                     "score_version": o["versions"]["score"]},
+    }
 
 
 @router.get("/health-status")
