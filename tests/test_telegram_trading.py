@@ -66,7 +66,7 @@ def _answers(http):
 
 def test_tap_approve_buys_and_replies(tg):
     assert tg.tap().status_code == 200
-    assert "Bought 2.741228 AAPL at $182.40 (MOCK)." in tg.http.texts()  # the suggested quantity
+    assert "Bought 2.741228 AAPL at $182.40 ($500.00) (MOCK)." in tg.http.texts()  # the suggested quantity
     assert _answers(tg.http) == ["Bought 2.741228 AAPL (MOCK)"]
     assert "editMessageReplyMarkup" in tg.http.methods()
     orders = tg.client.get("/api/v1/orders").json()
@@ -159,7 +159,7 @@ def _keyboards(http):
 
 def test_preset_shares_button_buys_that_quantity(tg):
     _tap_data(tg, "bq:a1:0.5")
-    assert "Bought 0.5 AAPL at $182.40 (MOCK)." in tg.http.texts()
+    assert "Bought 0.5 AAPL at $182.40 ($91.20) (MOCK)." in tg.http.texts()
     assert [o["quantity"] for o in tg.client.get("/api/v1/orders").json()] == [0.5]
     assert tg.status() == "APPROVED"
 

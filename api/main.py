@@ -44,7 +44,7 @@ from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import (AMOUNT_PROMPT, AMOUNT_UNREADABLE, TelegramClient, build_confirm_keyboard,
                                    parse_amount_callback, parse_amount_text, parse_callback)
 
-from . import market_source, performance, top_stocks, trading
+from . import market_source, notify, performance, trading
 from .validity import format_qty, quantity_for, suggest_quantity
 from .auth import auth_required, email_otp_enabled, get_otp_service, require_user
 
@@ -198,6 +198,14 @@ def _plain(value):
     return value
 
 
+def _buy_price(alert_id):
+    """The fill price of the alert's filled mock buy, or None (no buy, not filled, or no trades file)."""
+    if not alert_id or settings_store() is None:
+        return None
+    order = trading.get_trades_store().live_buy(alert_id)
+    return order["fillPrice"] if order and order["status"] == "FILLED" else None
+
+
 def _signal_from_alert(alert):
     """Turn a stored alert plus a live quote into a StockSignal.
 
@@ -255,6 +263,8 @@ def _signal_from_alert(alert):
         },
         "chartData": chart,
         "telegramMessageId": alert.get("telegramMessageId"),
+        "priceAtAlert": _plain(alert.get("priceAtAlert")),
+        "buyPrice": _buy_price(alert.get("alertId")),
         "suggestedShares": suggest_quantity(trading.live_price(snapshot), _plain(alert.get("stopPrice")),
                                             effective_settings()) or None,
         "screenerUrl": f"{Config.STOCK_SCREENER_URL}/stocks/{ticker}",
@@ -594,11 +604,6 @@ def get_market_overview(db=Depends(get_db)):
     }
 
 
-@router.get("/top-stocks")
-def get_top_stocks():
-    return top_stocks.top_stock_groups()
-
-
 @router.get("/alerts")
 def get_alerts(db=Depends(get_db)):
     """Return stored rows as-is.
@@ -608,6 +613,11 @@ def get_alerts(db=Depends(get_db)):
     whenever the wire format moves.
     """
     return db.list_alerts()
+
+
+def _worth_telling(reason):
+    """A refusal the operator can act on; not a decision already made, an information alert or an expiry."""
+    return reason not in (trading.ALREADY_REJECTED, trading.ALREADY_BOUGHT, trading.INFO_ONLY)         and not reason.startswith("Request expired")
 
 
 @router.post("/alerts/{alert_id}/review")
@@ -634,12 +644,16 @@ def review_alert(
         elif not db.update_alert_status(alert_id, body.decision):
             raise trading.DecisionNotRecorded(alert_id)
     except trading.TradeRefused as refused:
+        if body.decision == "APPROVED" and _worth_telling(refused.reason):
+            notify.admins(notify.refused_text(existing.get("ticker", ""), refused.reason))
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
     except trading.DecisionNotRecorded:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not record the decision.",
         )
+    if order is not None and order["status"] == "FILLED" and existing.get("status") != "APPROVED":
+        notify.admins(notify.bought_text(order, existing))  # a repeat approval of a bought alert sends nothing
 
     # Mirror the decision onto the Telegram message so the two surfaces agree.
     # A failure here is logged inside the client and must not fail the request:
@@ -744,8 +758,13 @@ def get_performance():
 def close_position(ticker: str = Path(..., min_length=1, max_length=16)):
     if Config.STORAGE_BACKEND != "sqlite":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No open position.")
+    ticker = ticker.upper()
     try:
-        return trading.close_position(ticker.upper())
+        held = next((p for p in trading.get_trades_store().open_positions() if p["ticker"] == ticker), None)
+        order = trading.close_position(ticker)
+        if order and order.get("status") == "FILLED":
+            notify.admins(notify.sold_text(order, held["costBasis"] if held else None))
+        return order
     except LookupError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No open position.")
     except trading.TradeRefused as refused:
@@ -932,9 +951,7 @@ def telegram_webhook(
             answer = f"Already bought {format_qty(order['quantity'])} {ticker} (MOCK)"  # a repeat tap: one buy, one message
         elif order is not None:
             answer = f"Bought {format_qty(order['quantity'])} {ticker} (MOCK)"
-            telegram.send_text(
-                chat_id, f"Bought {format_qty(order['quantity'])} {ticker} at ${order['fillPrice']:.2f} (MOCK)."
-            )
+            telegram.send_text(chat_id, notify.bought_text(order, existing))
         telegram.answer_callback_query(cb_id, answer)
         telegram.update_message_decision(tapped.get("message_id"), ticker, decision, chat_id=chat_id)
         stored = existing.get("telegramMessageId")
