@@ -18,3 +18,11 @@ def _no_exchange_lookups(monkeypatch):
     import utils.universe
 
     monkeypatch.setattr(utils.universe, "lookup_exchange", lambda ticker: None)
+
+
+@pytest.fixture(autouse=True)
+def _trades_file_in_tmp(monkeypatch, tmp_path):
+    """No test writes trades.db into the repo, whichever route opens the trades store."""
+    from config import Config
+
+    monkeypatch.setattr(Config, "TRADES_SQLITE_PATH", str(tmp_path / "trades.db"))
