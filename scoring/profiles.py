@@ -8,6 +8,12 @@ SWING = {
     "relative_strength": 8, "regime": 8, "risk_reward": 10, "reliability": 0, "ml": 0,
     "alignment": 0,  # R7: shown with every opportunity, counted only after a backtest earns it
 }
+# R8 long-term profile (starting hypotheses, owner to review): fundamentals weigh most; breakout counts for nothing.
+LONG_TERM = {
+    "fundamental": 35, "trend": 20, "relative_strength": 10, "regime": 10, "risk_reward": 10, "momentum": 5,
+    "volume": 5, "price_action": 5, "breakout": 0, "reliability": 0, "ml": 0, "alignment": 0,
+}
+LONG_TERM_NOTE = "Current fundamentals, not point-in-time"
 # Trend, momentum and breakout move together: their combined weight is capped before renormalising.
 TREND_FAMILY = ("trend", "momentum", "breakout")
 TREND_FAMILY_CAP = 35
@@ -20,5 +26,5 @@ LABELS = {
     "trend": "Trend", "momentum": "Momentum", "price_action": "Price action", "breakout": "Breakout",
     "volume": "Volume", "relative_strength": "Relative strength", "regime": "Market regime",
     "risk_reward": "Reward/risk", "reliability": "Strategy reliability", "ml": "Machine learning",
-    "alignment": "Timeframe alignment",
+    "alignment": "Timeframe alignment", "fundamental": "Fundamentals",
 }

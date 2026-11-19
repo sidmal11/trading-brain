@@ -10,11 +10,11 @@ from risk.assess import assess
 from scoring import components as c
 from scoring.aggregate import aggregate
 from scoring.explain import explain, gates
-from scoring.profiles import SCORE_VERSION, SWING
+from scoring.profiles import LONG_TERM, LONG_TERM_NOTE, SCORE_VERSION, SWING
 
 
 def build_opportunity(ticker, bars, features, results, regime, quality, earnings_day, today: date,
-                      max_holds=None) -> dict:
+                      max_holds=None, fundamentals=None) -> dict:
     """`results`: {strategy: latest result}; `quality`: data-quality status; `features` from features.build."""
     risk = assess(bars, results, regime, max_holds)
     comps = {
@@ -26,6 +26,8 @@ def build_opportunity(ticker, bars, features, results, regime, quality, earnings
         "alignment": c.alignment(features),
     }
     agg = aggregate(comps, SWING, quality)
+    stored = fundamentals or {}
+    long_term = aggregate({**comps, "fundamental": c.fundamental(stored.get("values"))}, LONG_TERM, quality)
     failed = gates(risk, agg["coverage"], quality, bars[-1].date if bars else None, today)
     note = earnings_note(earnings_day, today)
     warnings = [note] if note else []
@@ -37,7 +39,10 @@ def build_opportunity(ticker, bars, features, results, regime, quality, earnings
         "strategies": {k: {"direction": r["direction"], "score": r["confidence"], "version": r.get("version"),
                            "checklist": r.get("checklist", [])}
                        for k, r in results.items() if r},
-        "risk": risk, "dataQuality": quality, "timeframes": features.get("timeframes"), "earningsDate": earnings_day.isoformat() if earnings_day else None,
+        "risk": risk, "dataQuality": quality, "timeframes": features.get("timeframes"),
+        "longTerm": {"score": long_term["score"], "coverage": long_term["coverage"], "breakdown": long_term["breakdown"],
+                     "metrics": c.fundamental_metrics(stored.get("values")) if stored else [],
+                     "fetchedAt": stored.get("fetchedAt"), "note": LONG_TERM_NOTE}, "earningsDate": earnings_day.isoformat() if earnings_day else None,
         "explanation": explain(agg, results, risk, failed, warnings, comps),
         "versions": {"score": SCORE_VERSION, "features": FEATURE_VERSION,
                      "strategies": {k: r.get("version") for k, r in results.items() if r}, "model": None},

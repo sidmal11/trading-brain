@@ -10,7 +10,7 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _no_exchange_lookups(monkeypatch):
-    """The poll looks up exchanges on Yahoo; tests never reach the network."""
+    """The poll looks up exchanges and fundamentals on Yahoo; tests never reach the network."""
     import sys
     from pathlib import Path
 
@@ -18,6 +18,9 @@ def _no_exchange_lookups(monkeypatch):
     import utils.universe
 
     monkeypatch.setattr(utils.universe, "lookup_exchange", lambda ticker: None)
+    import market_data.fundamentals
+
+    monkeypatch.setattr(market_data.fundamentals, "download_fundamentals", lambda ticker: None)
 
 
 @pytest.fixture(autouse=True)

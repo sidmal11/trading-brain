@@ -97,3 +97,59 @@ def alignment(f):
     if label is None:
         return None, "not enough weekly history"
     return ALIGNMENT_SCORE[label], f"{label}: daily {tf['daily']['trend']}, weekly {tf['weekly']['trend']}"
+
+
+def _tier(value, good, middling, higher=True):
+    """100, 50 or 0 for one metric; None when it is missing (spec 11: missing is never weak)."""
+    if value is None:
+        return None
+    if higher:
+        return 100 if value > good else 50 if value > middling else 0
+    return 100 if value < good else 50 if value < middling else 0
+
+
+def _multiple(value, good, middling):
+    """A valuation multiple: zero or negative (losses) is weak; lower is better."""
+    if value is None:
+        return None
+    return 0 if value <= 0 else _tier(value, good, middling, higher=False)
+
+
+def fundamental_metrics(v) -> list:
+    """[{key, label, value, score}] for every metric R8 scores; value and score None when Yahoo has none."""
+    v = v or {}
+    fcf, cap = v.get("freeCashflow"), v.get("marketCap")
+    fcf_yield = fcf / cap * 100 if fcf is not None and cap else None
+    pct = lambda k: None if v.get(k) is None else v[k] * 100  # noqa: E731
+    rows = [
+        ("revenueGrowth", "Revenue growth %", pct("revenueGrowth"), _tier(pct("revenueGrowth"), 10, 0)),
+        ("earningsGrowth", "Earnings growth %", pct("earningsGrowth"), _tier(pct("earningsGrowth"), 10, 0)),
+        ("grossMargins", "Gross margin %", pct("grossMargins"), _tier(pct("grossMargins"), 40, 20)),
+        ("operatingMargins", "Operating margin %", pct("operatingMargins"), _tier(pct("operatingMargins"), 15, 5)),
+        ("profitMargins", "Net margin %", pct("profitMargins"), _tier(pct("profitMargins"), 10, 3)),
+        ("returnOnEquity", "Return on equity %", pct("returnOnEquity"), _tier(pct("returnOnEquity"), 15, 8)),
+        ("debtToEquity", "Debt to equity %", v.get("debtToEquity"), _tier(v.get("debtToEquity"), 100, 200, higher=False)),
+        ("currentRatio", "Current ratio", v.get("currentRatio"), _tier(v.get("currentRatio"), 1.5, 1)),
+        ("freeCashflow", "Free cash flow", fcf, None if fcf is None else 100 if fcf > 0 else 0),
+        ("trailingPE", "P/E", v.get("trailingPE"), _multiple(v.get("trailingPE"), 20, 35)),
+        ("forwardPE", "Forward P/E", v.get("forwardPE"), _multiple(v.get("forwardPE"), 20, 35)),
+        ("priceToSales", "Price to sales", v.get("priceToSalesTrailing12Months"),
+         _multiple(v.get("priceToSalesTrailing12Months"), 3, 8)),
+        ("evToEbitda", "EV/EBITDA", v.get("enterpriseToEbitda"), _multiple(v.get("enterpriseToEbitda"), 12, 20)),
+        ("fcfYield", "Free cash flow yield %", fcf_yield, _tier(fcf_yield, 4, 2)),
+    ]
+    return [{"key": k, "label": label, "value": value, "score": score} for k, label, value, score in rows]
+
+
+MIN_FUNDAMENTALS = 5
+
+
+def fundamental(values):
+    """Mean of the available metric scores; None with fewer than MIN_FUNDAMENTALS (current values, not point-in-time)."""
+    scored = [m for m in fundamental_metrics(values) if m["score"] is not None]
+    if len(scored) < MIN_FUNDAMENTALS:
+        return None, f"only {len(scored)} fundamentals available"
+    strong = [m["label"] for m in scored if m["score"] == 100]
+    weak = [m["label"] for m in scored if m["score"] == 0]
+    parts = ([f"strong {', '.join(strong)}"] if strong else []) + ([f"weak {', '.join(weak)}"] if weak else [])
+    return round(sum(m["score"] for m in scored) / len(scored)), "; ".join(parts) or "all middling"
