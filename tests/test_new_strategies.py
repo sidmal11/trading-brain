@@ -218,3 +218,23 @@ def test_squeeze_buys_a_wide_up_day_after_a_quiet_spell_with_the_stop_at_the_low
 def test_squeeze_with_a_weak_close_is_not_a_buy():
     last = squeeze.evaluate_series(squeeze_bars(close_at=0.97))[-1]  # closes in the middle of the range
     assert last["direction"] == "neutral" and not last["checklist"][2]["passed"]
+
+
+def test_accumulation_one_pass_matches_recomputing_each_window():
+    """The single pass over the history must give the numbers a 30-bar window recomputed per day gives."""
+    from indicators import cmf, mfi, obv
+
+    bars = walk(600, 4)
+    bars[350] = bars[350]._replace(volume=None)
+    out = accumulation.evaluate_series(bars)
+    for t in (100, 349, 360, 379, 380, 599):
+        window = bars[t - 29:t + 1]
+        details = {x["key"]: x["detail"] for x in out[t]["checklist"]}
+        if any(b.volume is None for b in window):
+            assert details["obv"] == "No volume reading" and out[t]["direction"] == "neutral"
+            continue
+        h, lo, c, v = ([getattr(b, k) for b in window] for k in ("high", "low", "close", "volume"))
+        o = obv(c, v)
+        assert details["obv"] == f"OBV trend {(o[-1] - o[-21]) / sum(v[-20:]):+.2f}"
+        assert details["cmf"] == f"CMF {cmf(h, lo, c, v, 20)[-1]:+.3f}"
+        assert details["mfi"] == f"MFI {mfi(h, lo, c, v, 14)[-1]:.0f}"

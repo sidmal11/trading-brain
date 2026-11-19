@@ -25,22 +25,29 @@ def evaluate_series(bars, spy=None):
     high, low, close = [b.high for b in bars], [b.low for b in bars], [b.close for b in bars]
     vol = [b.volume for b in bars]
     a, s50 = atr(high, low, close, 14), sma(close, 50)
+    # Every volume indicator here sums only its own window, so one pass over the whole history gives the same
+    # numbers as recomputing per day. A missing volume is computed as 0 and then blocks every day whose last
+    # WINDOW bars include it, so no number that touched it is ever used.
+    v0 = [0.0 if x is None else x for x in vol]
+    o, rv = obv(close, v0), relative_volume(v0, 20)
+    cmf20, mfi14 = cmf(high, low, close, v0, 20), mfi(high, low, close, v0, 14)
+    missing = [0] * (n + 1)  # missing[i] = missing volumes among bars[0:i]
+    for i, x in enumerate(vol):
+        missing[i + 1] = missing[i] + (x is None)
     out = []
     for t in range(n):
         lo_t = t - WINDOW + 1
-        v = vol[lo_t:t + 1] if lo_t >= 0 else [None]
-        if t < WARMUP or a[t] is None or s50[t] is None or None in v:
+        gap = lo_t < 0 or missing[t + 1] - missing[lo_t] > 0
+        if t < WARMUP or a[t] is None or s50[t] is None or gap:
             out.append(not_enough(NAME, VERSION, SIGNAL_TYPE, bars[t].date, ITEMS))
-            if t >= WARMUP and None in v:
+            if t >= WARMUP and gap:
                 for x in out[-1]["checklist"]:
                     x["detail"] = "No volume reading"
             continue
-        h, lo, c = high[lo_t:t + 1], low[lo_t:t + 1], close[lo_t:t + 1]
-        o, rv = obv(c, v), relative_volume(v, 20)
-        f, m = cmf(h, lo, c, v, 20)[-1], mfi(h, lo, c, v, 14)[-1]
-        traded = sum(v[-20:])
-        trend = (o[-1] - o[-21]) / traded if traded else None  # same measure as the obvTrend20 feature
-        surge = [rv[i] for i in (-3, -2, -1) if rv[i] is not None and rv[i] >= 1.5 and c[i] > c[i - 1]]
+        f, m = cmf20[t], mfi14[t]
+        traded = sum(v0[t - 19:t + 1])
+        trend = (o[t] - o[t - 20]) / traded if traded else None  # same measure as the obvTrend20 feature
+        surge = [rv[i] for i in (t - 2, t - 1, t) if rv[i] is not None and rv[i] >= 1.5 and close[i] > close[i - 1]]
         items = [
             item("obv", ITEMS[0][1], trend is not None and trend > 0.2, 25,
                  "No volume traded" if trend is None else f"OBV trend {trend:+.2f}"),
