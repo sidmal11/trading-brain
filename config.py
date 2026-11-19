@@ -120,7 +120,8 @@ class Config:
     AUTH_MODE = _get("AUTH_MODE", "").lower()
     # Local development only: lets the read API start with no login configured.
     ALLOW_UNAUTHENTICATED = _get("ALLOW_UNAUTHENTICATED", "").lower() == "true"
-    ALLOWED_EMAILS = _get("ALLOWED_EMAILS", "")
+    ALLOWED_EMAILS = _get("ALLOWED_EMAILS", "")  # seeds the allowed_emails table once (P4)
+    OWNER_EMAIL = _get("OWNER_EMAIL", "")  # manages the access list; required with AUTH_MODE=email_otp
     # Signs login codes. Required when AUTH_MODE=email_otp; generate with `openssl rand -hex 32`.
     SESSION_SECRET = _get("SESSION_SECRET", "")
     SMTP_HOST = _get("SMTP_HOST", "")

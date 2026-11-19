@@ -141,8 +141,10 @@ async def require_user(
     if email_otp_enabled():
         from .email_otp import COOKIE_NAME
 
+        from .access import is_allowed
+
         email = get_otp_service().session_email(request.cookies.get(COOKIE_NAME, ""))
-        if not email:
+        if not email or not is_allowed(email):  # a removed address loses access even if a session survived
             raise _unauthorized("Not signed in.")
         request.state.user = {"sub": email, "email": email}
         return request.state.user

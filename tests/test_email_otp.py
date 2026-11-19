@@ -41,6 +41,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setattr(Config, "AUTH_MODE", "email_otp")
     monkeypatch.setattr(Config, "ALLOWED_EMAILS", ALLOWED)
+    monkeypatch.setattr(Config, "OWNER_EMAIL", ALLOWED)
     monkeypatch.setattr(Config, "SESSION_SECRET", SECRET)
     monkeypatch.setattr(Config, "COOKIE_SECURE", False)  # the test client is plain http
     monkeypatch.setattr(Config, "SQLITE_PATH", str(tmp_path / "auth.db"))
@@ -157,9 +158,9 @@ def test_app_refuses_to_start_with_a_short_secret(env, monkeypatch):
         api_main.create_app()
 
 
-def test_app_refuses_to_start_with_no_allowed_emails(env, monkeypatch):
-    monkeypatch.setattr(Config, "ALLOWED_EMAILS", "  ")
-    with pytest.raises(RuntimeError, match="ALLOWED_EMAILS"):
+def test_app_refuses_to_start_with_no_owner(env, monkeypatch):
+    monkeypatch.setattr(Config, "OWNER_EMAIL", "  ")
+    with pytest.raises(RuntimeError, match="needs OWNER_EMAIL"):
         api_main.create_app()
 
 
@@ -172,4 +173,4 @@ def test_auth_routes_are_404_when_email_login_is_off(env, monkeypatch):
 def test_me_reports_the_signed_in_email(env):
     assert env["client"].get("/api/v1/auth/me").status_code == 401
     _login(env)
-    assert env["client"].get("/api/v1/auth/me").json() == {"email": ALLOWED}
+    assert env["client"].get("/api/v1/auth/me").json() == {"email": ALLOWED, "owner": True}

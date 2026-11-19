@@ -25,7 +25,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -787,11 +787,11 @@ auth_router = APIRouter(prefix="/api/v1/auth")
 
 
 @auth_router.post("/otp/request")
-def otp_request(body: OtpRequest):
+def otp_request(body: OtpRequest, background: BackgroundTasks):
     if not email_otp_enabled():
         raise HTTPException(status_code=404, detail="Not found.")
-    get_otp_service().request_code(body.email)
-    # Same answer whether or not the address is allowed.
+    # Same answer, at the same speed, whether or not the address is allowed: the lookup and the email run after it.
+    background.add_task(get_otp_service().request_code, body.email)
     return {"ok": True}
 
 
@@ -818,10 +818,12 @@ def me(request: Request):
 
     if not email_otp_enabled():
         raise HTTPException(status_code=404, detail="Not found.")
+    from .access import is_allowed, owner_email
+
     email = get_otp_service().session_email(request.cookies.get(COOKIE_NAME, ""))
-    if not email:
+    if not email or not is_allowed(email):
         raise HTTPException(status_code=401, detail="Not signed in.")
-    return {"email": email}
+    return {"email": email, "owner": email == owner_email()}
 
 
 @auth_router.post("/logout")
@@ -832,6 +834,58 @@ def logout(request: Request, response: Response):
         get_otp_service().end_session(request.cookies.get(COOKIE_NAME, ""))
     response.delete_cookie(COOKIE_NAME, path="/")
     return {"ok": True}
+
+
+# ── Access list (P4, owner only) ──────────────────────────────────────────────
+
+def require_owner(request: Request, user=Depends(require_user)):
+    """The owner's email session; 404 without email sign-in (no list to manage), 403 for anyone else."""
+    from .access import owner_email
+
+    if not email_otp_enabled():
+        raise HTTPException(status_code=404, detail="Not found.")
+    if (user or {}).get("email") != owner_email():
+        raise HTTPException(status_code=403, detail="Only the owner can manage access.")
+    return user["email"]
+
+
+class AllowedEmailIn(BaseModel):
+    email: str = Field(max_length=254)
+
+
+access_router = APIRouter(prefix="/api/v1/allowed-emails")
+
+
+def _access_list():
+    from .access import access_store, owner_email
+
+    return {"owner": owner_email(), "emails": access_store().list()}
+
+
+@access_router.get("")
+def list_allowed_emails(owner: str = Depends(require_owner)):
+    return _access_list()
+
+
+@access_router.post("")
+def add_allowed_email(body: AllowedEmailIn, owner: str = Depends(require_owner)):
+    from .access import access_store, normalise, valid_email
+
+    email = normalise(body.email)
+    if not valid_email(email):
+        raise HTTPException(status_code=422, detail="That is not an email address.")
+    access_store().add(email, owner)
+    return _access_list()
+
+
+@access_router.delete("/{email}")
+def remove_allowed_email(email: str = Path(..., max_length=254), owner: str = Depends(require_owner)):
+    from .access import access_store, normalise, owner_email
+
+    if normalise(email) == owner_email():
+        raise HTTPException(status_code=409, detail="The owner cannot be removed.")
+    access_store().remove(email)
+    return _access_list()
 
 
 # ── Telegram webhook ──────────────────────────────────────────────────────────
@@ -1053,8 +1107,11 @@ def create_app() -> FastAPI:
     if email_otp_enabled():
         if not Config.SESSION_SECRET or len(Config.SESSION_SECRET) < 32:
             raise RuntimeError("AUTH_MODE=email_otp needs SESSION_SECRET of at least 32 characters.")
-        if not Config.ALLOWED_EMAILS.strip():
-            raise RuntimeError("AUTH_MODE=email_otp needs ALLOWED_EMAILS.")
+        from .access import access_store, owner_email
+
+        if not owner_email():
+            raise RuntimeError("AUTH_MODE=email_otp needs OWNER_EMAIL (the address that manages access).")
+        access_store()  # creates and seeds the allowed_emails table once
     # Fail closed: with no login configured, every data route would be open to anyone who can reach the server.
     if not auth_required() and not Config.ALLOW_UNAUTHENTICATED:
         raise RuntimeError(
@@ -1079,7 +1136,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
@@ -1089,6 +1146,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router)
     app.include_router(router)
+    app.include_router(access_router)
     app.include_router(webhook_router)
 
     return app

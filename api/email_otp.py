@@ -1,7 +1,7 @@
 """Email one-time-code login with a session cookie. Used when AUTH_MODE=email_otp.
 
 Flow:
-1. POST /api/v1/auth/otp/request {email}: if the address is on ALLOWED_EMAILS, a
+1. POST /api/v1/auth/otp/request {email}: if the address is allowed (api/access.py), a
    6-digit code is emailed. The response is identical either way, so the API
    does not reveal which addresses are allowed.
 2. POST /api/v1/auth/otp/verify {email, code}: on success, sets an HttpOnly session
@@ -102,10 +102,6 @@ def _normalise(email: str) -> str:
     return (email or "").strip().lower()
 
 
-def _allowed_emails():
-    return {_normalise(e) for e in Config.ALLOWED_EMAILS.split(",") if e.strip()}
-
-
 def _code_hash(email: str, code: str) -> str:
     return hmac.new(Config.SESSION_SECRET.encode(), f"{email}:{code}".encode(), hashlib.sha256).hexdigest()
 
@@ -145,8 +141,10 @@ class EmailOtpService:
 
     def request_code(self, email: str) -> None:
         """Always returns None. Callers respond identically whether or not the email is allowed."""
+        from .access import is_allowed
+
         email = _normalise(email)
-        if email not in _allowed_emails():
+        if not is_allowed(email):
             return
         row = self.store.get_code(email)
         if row and self.clock() - row[3] < REQUEST_COOLDOWN_SECONDS:

@@ -42,7 +42,8 @@ Use your own domain, or a free subdomain from DuckDNS. Either way, create an **A
    ```bash
    DOMAIN=your.domain.example
    AUTH_MODE=email_otp
-   ALLOWED_EMAILS=you@example.com
+   OWNER_EMAIL=you@example.com        # signs in and manages who else may (Access page)
+   ALLOWED_EMAILS=you@example.com     # copied into the access list once, at first start
    SESSION_SECRET=<openssl rand -hex 32>
    COOKIE_SECURE=true
    SMTP_HOST=<your SMTP host>
