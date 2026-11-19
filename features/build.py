@@ -12,10 +12,11 @@ from datetime import datetime, timezone
 
 from features.price_action import price_action
 from features.relative_strength import PERIODS, relative_returns
+from market_data.weekly import weekly_bars
 from indicators import (adx, atr_pct, bollinger, cmf, ema, hist_vol, macd, mfi, obv, relative_volume, roc,
                         rolling_percentile, rsi, slope, sma, stoch_rsi)
 
-FEATURE_VERSION = "1"  # bump on any change to a definition below
+FEATURE_VERSION = "2"  # bump on any change to a definition below; "2" adds timeframes (R7)
 
 
 def _pct(a, b):
@@ -24,6 +25,41 @@ def _pct(a, b):
 
 def _last(xs):
     return xs[-1] if xs else None
+
+
+def trend_state(close, short, long):
+    """"up", "down" or "flat" from the close and two averages; None when either average is missing."""
+    if None in (close, short, long):
+        return None
+    if close > long and short > long:
+        return "up"
+    if close < long and short < long:
+        return "down"
+    return "flat"
+
+
+def alignment(daily, weekly):
+    """strong, partial, conflicting or neutral (R7); None when either timeframe is unknown."""
+    if daily is None or weekly is None:
+        return None
+    states = {daily, weekly}
+    if states == {"up"}:
+        return "strong"
+    if states == {"up", "down"}:
+        return "conflicting"
+    return "partial" if "up" in states else "neutral"
+
+
+def timeframes(bars, daily_trend) -> dict:
+    """Weekly trend and momentum from completed weeks, and how the weekly trend agrees with the daily one."""
+    w = weekly_bars(bars)
+    wc = [b.close for b in w]
+    weekly = {"trend": None, "rsi14": None, "return13Pct": None, "weeks": len(w), "asOf": w[-1].date if w else None}
+    if len(wc) >= 2:
+        weekly["trend"] = trend_state(wc[-1], sma(wc, 10)[-1], sma(wc, 40)[-1])
+        weekly["rsi14"] = rsi(wc, 14)[-1] if len(wc) > 14 else None
+        weekly["return13Pct"] = _pct(wc[-1], wc[-14]) if len(wc) > 13 else None
+    return {"daily": {"trend": daily_trend}, "weekly": weekly, "alignment": alignment(daily_trend, weekly["trend"])}
 
 
 def build_features(bars, spy=None, sector=None, sector_etf=None) -> dict:
@@ -80,6 +116,7 @@ def build_features(bars, spy=None, sector=None, sector_etf=None) -> dict:
         "version": FEATURE_VERSION, "asOf": bars[-1].date, "bars": n,
         "trend": trend, "momentum": momentum, "volatility": volatility, "volume": volume,
         "relativeStrength": relative, "priceAction": pa,
+        "timeframes": timeframes(bars, trend_state(close[-1], s50[-1], s200[-1])),  # not in coverage: weight 0
         "coverage": sum(v is not None for v in scalars) / len(scalars),
     }
 

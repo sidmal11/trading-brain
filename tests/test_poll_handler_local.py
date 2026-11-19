@@ -774,7 +774,7 @@ def test_bar_refresh_stores_feature_snapshots(poll):
     BarStore(Config.SQLITE_PATH).upsert("NVDA", [b._replace(date=b.date) for b in walk(300) if b.date < "2026-11-16"])
     lambda_function.lambda_handler({}, None)
     snap = FeatureStore(Config.SQLITE_PATH).latest("NVDA")
-    assert snap and snap["relativeStrength"]["sectorEtf"] == "SMH" and snap["version"] == "1"
+    assert snap and snap["relativeStrength"]["sectorEtf"] == "SMH" and snap["version"] == "2"
 
 
 

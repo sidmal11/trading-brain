@@ -86,3 +86,14 @@ def risk_reward(rr):
     if rr is None:
         return None, "no plan"
     return round(100 * min(max((rr - 1) / 2, 0), 1)), f"{rr:.2f} to 1"
+
+
+ALIGNMENT_SCORE = {"strong": 100, "partial": 60, "neutral": 30, "conflicting": 0}
+
+
+def alignment(f):
+    tf = f.get("timeframes") or {}
+    label = tf.get("alignment")
+    if label is None:
+        return None, "not enough weekly history"
+    return ALIGNMENT_SCORE[label], f"{label}: daily {tf['daily']['trend']}, weekly {tf['weekly']['trend']}"

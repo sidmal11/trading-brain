@@ -23,6 +23,7 @@ def build_opportunity(ticker, bars, features, results, regime, quality, earnings
         "momentum": c.momentum(features), "price_action": c.price_action(features), "volume": c.volume(features),
         "relative_strength": c.relative_strength(features), "regime": c.regime(regime),
         "risk_reward": c.risk_reward(risk["riskReward"]),
+        "alignment": c.alignment(features),
     }
     agg = aggregate(comps, SWING, quality)
     failed = gates(risk, agg["coverage"], quality, bars[-1].date if bars else None, today)
@@ -36,7 +37,7 @@ def build_opportunity(ticker, bars, features, results, regime, quality, earnings
         "strategies": {k: {"direction": r["direction"], "score": r["confidence"], "version": r.get("version"),
                            "checklist": r.get("checklist", [])}
                        for k, r in results.items() if r},
-        "risk": risk, "dataQuality": quality, "earningsDate": earnings_day.isoformat() if earnings_day else None,
+        "risk": risk, "dataQuality": quality, "timeframes": features.get("timeframes"), "earningsDate": earnings_day.isoformat() if earnings_day else None,
         "explanation": explain(agg, results, risk, failed, warnings, comps),
         "versions": {"score": SCORE_VERSION, "features": FEATURE_VERSION,
                      "strategies": {k: r.get("version") for k, r in results.items() if r}, "model": None},

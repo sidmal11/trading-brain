@@ -510,6 +510,17 @@ def get_opportunity_explanation(opportunity_id: str = Path(..., max_length=40)):
     return {"id": o["id"], "ticker": o["ticker"], "qualityScore": o["qualityScore"], **o["explanation"]}
 
 
+def _weekly_view(tf):
+    """The analysis object's "1w" entry and the alignment label, from the opportunity's timeframes (R7)."""
+    if not tf:
+        return {}
+    weekly = tf["weekly"]
+    trend = {"up": "positive", "down": "negative", "flat": "neutral"}.get(weekly["trend"])
+    r = weekly["rsi14"]
+    momentum = None if r is None else "positive" if r > 55 else "negative" if r < 45 else "neutral"
+    return {"1w": {"trend": trend, "momentum": momentum, "score": None}, "alignment": tf["alignment"]}
+
+
 @router.get("/analysis/{ticker}", response_model=AnalysisOut)
 def get_analysis(ticker: str = Path(..., pattern=r"^[A-Za-z0-9.\-]{1,10}$")):
     ticker = ticker.upper()
@@ -522,7 +533,8 @@ def get_analysis(ticker: str = Path(..., pattern=r"^[A-Za-z0-9.\-]{1,10}$")):
     word = lambda s: None if s is None else "positive" if s >= 60 else "negative" if s < 40 else "neutral"  # noqa: E731
     return {
         "symbol": ticker, "analysis_timestamp": o["asOf"],
-        "timeframes": {"1d": {"trend": word(trend_score), "momentum": word(momentum_score), "score": o["qualityScore"]}},
+        "timeframes": {"1d": {"trend": word(trend_score), "momentum": word(momentum_score), "score": o["qualityScore"]},
+                       **_weekly_view(o.get("timeframes"))},
         "strategy_scores": {k: s["score"] for k, s in o["strategies"].items()},
         "overall": {"direction": o["direction"], "quality_score": o["qualityScore"], "calibrated_probability": None},
         "risk": {"risk_reward_ratio": o["risk"]["riskReward"], "risk_status": "eligible" if o["eligible"] else "blocked",
