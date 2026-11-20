@@ -34,7 +34,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(trading, "get_trades_store", lambda: trades)
     monkeypatch.setattr(trading, "price_of", lambda t: 156.67)
     monkeypatch.setattr(performance, "daily_bars", lambda tickers, start: BARS)
-    order, _ = trades.claim_buy("a1", "NVDA", 3, "2026-11-17")
+    order, _ = trades.claim_buy(trading.default_account_id(trades), "a1", "NVDA", 3, "2026-11-17")
     trades.fill(order["id"], 153.7)
     alerts = SqliteStore(Config.SQLITE_PATH)
     alerts.save_alert("a1", "NVDA", "m", "p", price=150.0, trading_date="2026-11-17")
@@ -139,7 +139,7 @@ def test_route_requests_only_scored_and_filled_tickers(env, monkeypatch):
     store = SqliteStore(Config.SQLITE_PATH)
     store.save_alert("old", "OLD", "m", "p")  # no price or date: not scored
     store.save_alert("nodate", "NOD", "m", "p", price=1.0)
-    trading.get_trades_store().claim_buy("a9", "PND", 1, "2026-11-01")  # pending, never filled
+    trading.get_trades_store().claim_buy(trading.default_account_id(trading.get_trades_store()), "a9", "PND", 1, "2026-11-01")  # pending, never filled
     env.get("/api/v1/performance")
     assert asked == [(["NVDA"], "2026-11-17")]
 

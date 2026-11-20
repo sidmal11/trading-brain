@@ -203,7 +203,8 @@ def _buy_price(alert_id):
     """The fill price of the alert's filled mock buy, or None (no buy, not filled, or no trades file)."""
     if not alert_id or settings_store() is None:
         return None
-    order = trading.get_trades_store().live_buy(alert_id)
+    store = trading.get_trades_store()
+    order = store.live_buy(trading.default_account_id(store), alert_id)
     return order["fillPrice"] if order and order["status"] == "FILLED" else None
 
 
@@ -690,7 +691,8 @@ def review_alert(
 def get_orders():
     if Config.STORAGE_BACKEND != "sqlite":  # the trades file lives only beside the SQLite store
         return []
-    return trading.get_trades_store().list_orders()
+    store = trading.get_trades_store()
+    return store.list_orders(trading.default_account_id(store))
 
 
 @router.get("/data-quality")
@@ -762,7 +764,8 @@ def get_positions():
 @router.get("/performance")
 def get_performance():
     # limit=-1 is SQLite for "no limit": the report needs every order, not the newest 200
-    orders = trading.get_trades_store().list_orders(limit=-1) if Config.STORAGE_BACKEND == "sqlite" else []
+    store = trading.get_trades_store() if Config.STORAGE_BACKEND == "sqlite" else None
+    orders = store.list_orders(trading.default_account_id(store), limit=-1) if store else []
     alerts = get_db().list_alerts(limit=10**9)
     # Only what the report scores: filled orders and alerts with a price and date.
     needed = [o for o in orders if o["status"] == "FILLED"]
@@ -781,7 +784,8 @@ def close_position(background: BackgroundTasks, ticker: str = Path(..., min_leng
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No open position.")
     ticker = ticker.upper()
     try:
-        held = next((p for p in trading.get_trades_store().open_positions() if p["ticker"] == ticker), None)
+        store = trading.get_trades_store()
+        held = next((p for p in store.open_positions(trading.default_account_id(store)) if p["ticker"] == ticker), None)
         order = trading.close_position(ticker)
         if order and order.get("status") == "FILLED":
             background.add_task(notify.admins, notify.sold_text(order, held["costBasis"] if held else None))
@@ -1175,7 +1179,10 @@ def _handle_command(message, subscribers):
 def create_app() -> FastAPI:
     get_broker(lambda ticker: None)  # refuses any broker other than the mock
     if Config.STORAGE_BACKEND == "sqlite":
-        stranded = trading.get_trades_store().fail_stranded(0)  # cut off by the stop before this start
+        store = trading.get_trades_store()
+        from .access import owner_email
+        store.migrate_shared(owner_email() or "local-development", Config.MOCK_STARTING_CASH)  # once: shared orders go to the owner
+        stranded = store.fail_stranded(0)  # cut off by the stop before this start
         if stranded:
             logger.warning("Marked %d order(s) left PENDING by the last stop as FAILED", stranded)
     # Refuse to start with email login half-configured: a missing secret or an

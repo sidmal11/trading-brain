@@ -12,6 +12,7 @@ from utils.settings_store import effective_settings, settings_store
 from utils.trades_store import TradesStore
 
 from . import market_source
+from .access import owner_email
 from .validity import invalid_reason, quantity_for, suggest_quantity
 
 BROKER_ERROR = "Broker error."
@@ -49,6 +50,11 @@ def get_trades_store():
     return TradesStore(Config.TRADES_SQLITE_PATH)
 
 
+def default_account_id(store):
+    """The one account every caller uses for now: the owner's (a later step replaces this with the caller's)."""
+    return store.ensure_account(owner_email() or "local-development", Config.MOCK_STARTING_CASH)["id"]
+
+
 def _set_approved(db, alert_id):
     if not db.update_alert_status(alert_id, "APPROVED"):
         raise DecisionNotRecorded(alert_id)
@@ -67,9 +73,9 @@ def _settle(store, order, place, price):
 
 def _buy_refusal(alert, today, store, settings, price, quantity):
     ticker = alert["ticker"].upper()
-    if any(p["ticker"].upper() == ticker for p in store.open_positions()):
+    if any(p["ticker"].upper() == ticker for p in store.open_positions(default_account_id(store))):
         return f"Already holding {ticker}."
-    if store.filled_buys_on(today) >= settings["maxOrdersPerDay"]:
+    if store.filled_buys_on(default_account_id(store), today) >= settings["maxOrdersPerDay"]:
         return f"Daily order limit reached ({settings['maxOrdersPerDay']})."
     return _cash_refusal(store, price, quantity)
 
@@ -79,7 +85,7 @@ def _cash_refusal(store, price, quantity):
         return "Price unavailable."
     if round(quantity * price, 2) < 1:  # cents: $1 at an awkward price must not fall a hair short
         return "Minimum order is $1."
-    if store.cash(store.starting_cash(Config.MOCK_STARTING_CASH)) < quantity * price:
+    if store.cash(default_account_id(store)) < quantity * price:
         return "Not enough mock cash."
     return None
 
@@ -102,7 +108,7 @@ def execute_approval(alert, db, shares=None, dollars=None):
         raise TradeRefused(INFO_ONLY)
     settings = effective_settings()
     store = get_trades_store() if settings_store() is not None else None  # the trades file lives only on SQLite
-    existing = store.live_buy(alert_id) if store else None
+    existing = store.live_buy(default_account_id(store), alert_id) if store else None
     if existing:
         # Already bought (or being bought): a repeat approval answers with that order, whatever the price did since.
         if existing["status"] == "FILLED":
@@ -123,7 +129,7 @@ def execute_approval(alert, db, shares=None, dollars=None):
     priced = price is not None and price > 0  # never size against a missing or zero price
     quantity = quantity_for(price, shares, dollars, suggest_quantity(price, stop, settings)) if priced else 0
     today = trading_date()
-    order, created = store.claim_buy(alert_id, ticker, quantity, today, strategy=alert.get("strategy"),
+    order, created = store.claim_buy(default_account_id(store), alert_id, ticker, quantity, today, strategy=alert.get("strategy"),
                                      stop_price=stop, target_price=_num(alert.get("targetPrice")))
     if not created:
         # Another approval owns this order; never fill or fail it from here.
@@ -149,7 +155,7 @@ def reject(alert, db):
     if alert.get("status") == "INFO":
         raise TradeRefused(INFO_ONLY)
     store = get_trades_store() if settings_store() is not None else None
-    if store and store.live_buy(alert["alertId"]):
+    if store and store.live_buy(default_account_id(store), alert["alertId"]):
         raise TradeRefused(ALREADY_BOUGHT)
     if not db.update_alert_status(alert["alertId"], "REJECTED"):
         raise DecisionNotRecorded(alert["alertId"])
@@ -163,7 +169,7 @@ def close_position(ticker):
         raise TradeRefused("Price unavailable.")
     store = get_trades_store()
     # The position is read inside the claim, so a second Close cannot sell it again.
-    order = store.claim_sell(ticker, trading_date())
+    order = store.claim_sell(default_account_id(store), ticker, trading_date())
     if order is None:
         raise LookupError(ticker)
     return _settle(store, order, lambda broker: broker.sell(ticker, order["quantity"], order["id"]), price)
@@ -179,13 +185,14 @@ def manual_buy(ticker, shares=None, dollars=None):
     reason = _cash_refusal(store, price, quantity)
     if reason:
         raise TradeRefused(reason)
-    order = store.claim_manual_buy(ticker, quantity, trading_date())
+    order = store.claim_manual_buy(default_account_id(store), ticker, quantity, trading_date())
     return _settle(store, order, lambda broker: broker.buy(ticker, quantity, order["id"]), price)
 
 
 def reset_account(starting_cash):
     """Archive every order and start the mock account over with `starting_cash`."""
-    if not get_trades_store().reset(starting_cash):
+    store = get_trades_store()
+    if not store.reset(default_account_id(store), starting_cash):
         raise TradeRefused("An order is still being placed. Try again in a moment.")
     return positions_snapshot()
 
@@ -193,7 +200,8 @@ def reset_account(starting_cash):
 def positions_snapshot():
     store = get_trades_store()
     positions = []
-    for p in store.open_positions():
+    account_id = default_account_id(store)
+    for p in store.open_positions(account_id):
         price = price_of(p["ticker"])
         cost = p["costBasis"]
         gain = None if price is None else price * p["quantity"] - cost
@@ -210,7 +218,7 @@ def positions_snapshot():
         })
     return {
         "broker": MockBroker.name,
-        "startingCash": store.starting_cash(Config.MOCK_STARTING_CASH),
-        "cash": store.cash(store.starting_cash(Config.MOCK_STARTING_CASH)),
+        "startingCash": store.ensure_account(owner_email() or "local-development", Config.MOCK_STARTING_CASH)["startingCash"],
+        "cash": store.cash(account_id),
         "positions": positions,
     }

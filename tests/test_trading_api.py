@@ -44,6 +44,7 @@ class Env:
         monkeypatch.setattr(api_main, "TelegramClient", _NoopTelegram)
         _NoopTelegram.calls = []
         self.trades = TradesStore(str(tmp_path / "trades.db"))
+        self.acct = lambda: trading.default_account_id(self.trades)
         monkeypatch.setattr(trading, "get_trades_store", lambda: self.trades)
         monkeypatch.setattr(trading, "price_of", lambda ticker: self.price)
         monkeypatch.setattr(trading, "session_fraction", lambda: self.open)
@@ -108,7 +109,7 @@ def test_second_alert_for_a_held_ticker_is_refused_until_close(env):
     r = env.approve("a2")
     assert r.status_code == 409 and r.json()["detail"] == "Already holding AAPL."
     assert env.status("a2") == "PENDING"
-    mine = [o for o in env.trades.list_orders() if o["alertId"] == "a2"]
+    mine = [o for o in env.trades.list_orders(env.acct()) if o["alertId"] == "a2"]
     assert [(o["status"], o["reason"]) for o in mine] == [("FAILED", "Already holding AAPL.")]
     [position] = env.client.get("/api/v1/positions").json()["positions"]
     assert position["quantity"] == SUGGESTED  # no second buy
@@ -155,7 +156,7 @@ def _no_price(env):
 
 
 def _poor(env):
-    env.mp.setattr(Config, "MOCK_STARTING_CASH", 100.0)
+    env.trades.reset(env.acct(), 100.0)
 
 
 @pytest.mark.parametrize("arrange, reason", [
@@ -170,7 +171,7 @@ def test_each_limit_refuses_with_its_reason(env, arrange, reason):
     assert r.status_code == 409
     assert r.json()["detail"] == reason
     assert env.status() == "PENDING"
-    mine = [o for o in env.trades.list_orders() if o["alertId"] == "a1"]
+    mine = [o for o in env.trades.list_orders(env.acct()) if o["alertId"] == "a1"]
     assert [(o["status"], o["reason"]) for o in mine] == [("FAILED", reason)]
     assert _NoopTelegram.calls == []
 
@@ -191,7 +192,7 @@ def test_broker_exception_marks_the_order_failed(env, monkeypatch):
     monkeypatch.setattr(trading.MockBroker, "buy", boom)
     with pytest.raises(RuntimeError):
         trading.execute_approval(env.alerts.get_alert("a1"), env.alerts)
-    assert [(o["status"], o["reason"]) for o in env.trades.list_orders()] == [("FAILED", "Broker error.")]
+    assert [(o["status"], o["reason"]) for o in env.trades.list_orders(env.acct())] == [("FAILED", "Broker error.")]
 
 
 def test_positions_and_cash_after_a_buy(env):
@@ -233,7 +234,7 @@ def test_close_after_close_is_404(env):
     assert env.client.post("/api/v1/positions/AAPL/close").status_code == 200
     assert env.client.post("/api/v1/positions/AAPL/close").status_code == 404
     assert env.client.get("/api/v1/positions").json()["cash"] == 10000.0
-    assert [o["side"] for o in env.trades.list_orders()] == ["SELL", "BUY"]
+    assert [o["side"] for o in env.trades.list_orders(env.acct())] == ["SELL", "BUY"]
 
 
 def test_close_with_quote_down_is_409_and_books_nothing(env):
@@ -241,7 +242,7 @@ def test_close_with_quote_down_is_409_and_books_nothing(env):
     env.price = None
     r = env.client.post("/api/v1/positions/AAPL/close")
     assert r.status_code == 409 and r.json()["detail"] == "Price unavailable."
-    assert [o["side"] for o in env.trades.list_orders()] == ["BUY"]
+    assert [o["side"] for o in env.trades.list_orders(env.acct())] == ["BUY"]
 
 
 def test_close_broker_exception_marks_the_sell_failed(env, monkeypatch):
@@ -253,7 +254,7 @@ def test_close_broker_exception_marks_the_sell_failed(env, monkeypatch):
     monkeypatch.setattr(trading.MockBroker, "sell", boom)
     with pytest.raises(RuntimeError):
         trading.close_position("AAPL")
-    sell = env.trades.list_orders()[0]
+    sell = env.trades.list_orders(env.acct())[0]
     assert (sell["side"], sell["status"], sell["reason"]) == ("SELL", "FAILED", "Broker error.")
 
 
@@ -274,12 +275,12 @@ def test_reject_is_unchanged(env):
     r = env.client.post("/api/v1/alerts/a1/review", json={"decision": "REJECTED"})
     assert r.status_code == 200 and r.json()["order"] is None
     assert env.status() == "REJECTED"
-    assert env.trades.list_orders() == []
+    assert env.trades.list_orders(env.acct()) == []
 
 
 def test_pnl_uses_the_exact_cost_basis_not_the_rounded_average(env):
     for alert_id, price in (("b1", 33.335), ("b2", 33.335), ("b3", 33.34)):
-        order, _ = env.trades.claim_buy(alert_id, "XYZ", 50, TODAY)
+        order, _ = env.trades.claim_buy(env.acct(), alert_id, "XYZ", 50, TODAY)
         env.trades.fill(order["id"], price)
     env.price = 5000.5 / 150  # unchanged: the exact average cost
     p = env.client.get("/api/v1/positions").json()["positions"][0]
@@ -337,7 +338,7 @@ def test_shares_buy_exactly_that_many(env):
 ])
 def test_bad_amounts_are_422_and_book_nothing(env, amount):
     assert env.approve(**amount).status_code == 422
-    assert env.trades.list_orders() == [] and env.status() == "PENDING"
+    assert env.trades.list_orders(env.acct()) == [] and env.status() == "PENDING"
 
 
 def test_non_finite_amount_is_422(env):
@@ -365,7 +366,7 @@ def test_approval_below_the_stop_expires_the_request(env):
     r = env.approve("m1")
     assert r.status_code == 409 and r.json()["detail"] == "Request expired: Price fell to the stop $95.00."
     assert env.status("m1") == "EXPIRED"
-    assert env.trades.list_orders() == []
+    assert env.trades.list_orders(env.acct()) == []
 
 
 def test_approval_after_a_run_up_expires_the_request(env):
@@ -389,9 +390,9 @@ def test_buys_an_alert_from_an_earlier_day(env):
 
 
 def test_decimal_quantity_round_trips_exactly(env):
-    order, _ = env.trades.claim_buy("x1", "XYZ", 0.065061, TODAY)
+    order, _ = env.trades.claim_buy(env.acct(), "x1", "XYZ", 0.065061, TODAY)
     assert env.trades.fill(order["id"], 153.7)["quantity"] == 0.065061
-    assert env.trades.open_positions()[0]["quantity"] == 0.065061
+    assert env.trades.open_positions(env.acct())[0]["quantity"] == 0.065061
 
 
 def test_price_of_uses_the_extended_price_when_closed(monkeypatch):
@@ -484,7 +485,7 @@ def test_reset_archives_orders_and_starts_over_with_the_new_balance(env):
 
 
 def test_reset_is_refused_while_an_order_is_in_flight(env):
-    env.trades.claim_manual_buy("MSFT", 1, TODAY)   # PENDING
+    env.trades.claim_manual_buy(env.acct(), "MSFT", 1, TODAY)   # PENDING
     r = env.client.post("/api/v1/paper/reset", json={"startingCash": 10000})
     assert r.status_code == 409 and "still being placed" in r.json()["detail"]
     assert len(env.client.get("/api/v1/orders").json()) == 1

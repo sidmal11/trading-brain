@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from api import main as api_main  # noqa: E402
+from api import trading  # noqa: E402
 from config import Config  # noqa: E402
 from tests.test_trading_api import Env  # noqa: E402
 from utils import telegram_client as tc  # noqa: E402
@@ -119,7 +120,7 @@ def test_tap_reject_is_unchanged(tg):
 
 
 def test_tap_while_order_in_flight_does_not_claim_a_buy(tg):
-    tg.trades.claim_buy("a1", "AAPL", 2, "2026-11-17")  # another request holds a PENDING order
+    tg.trades.claim_buy(trading.default_account_id(tg.trades), "a1", "AAPL", 2, "2026-11-17")  # another request holds a PENDING order
     tg.tap()
     assert _answers(tg.http) == ["AAPL: order in progress."]
     assert tg.http.texts() == []
@@ -135,7 +136,7 @@ def test_tap_approve_unexpected_error_is_answered_not_redelivered(tg, monkeypatc
     assert r.status_code == 200 and r.json()["status"] == "PENDING"
     assert _answers(tg.http) == ["Broker error."]
     assert "AAPL not bought: Broker error." in tg.http.texts()
-    assert all(o["status"] != "FILLED" for o in tg.trades.list_orders())
+    assert all(o["status"] != "FILLED" for o in tg.trades.list_orders(trading.default_account_id(tg.trades)))
     assert tg.status() == "PENDING"
 
 

@@ -10,7 +10,7 @@ from api.validity import format_qty, suggest_quantity
 from utils.telegram_client import build_amount_keyboard
 from utils.market_clock import MARKET_TZ, session_fraction, trading_date
 from datetime import datetime, timezone
-from api.trading import get_trades_store, price_of
+from api.trading import default_account_id, get_trades_store, price_of
 from api.validity import invalid_reason
 from utils.api_client import REFERENCE
 from utils.universe import SEED_TICKERS, fill_exchanges, universe_store, universe_tickers
@@ -317,7 +317,7 @@ def expire_sweep(db, telegram, settings, price_of, alerts=None):
     return expired
 
 
-def stop_watch(trades, notices, telegram, settings, price_of, today):
+def stop_watch(trades, notices, telegram, settings, price_of, today, account_id=None):
     """Warn admins once per ticker per day when a held mock position is within stopAlertPct of its stop.
 
     Information only: nothing is sold. Returns the tickers warned about.
@@ -327,7 +327,7 @@ def stop_watch(trades, notices, telegram, settings, price_of, today):
     if not is_trading_day(date.fromisoformat(today)):  # prices do not move on a closed day: no repeat warnings
         return []
     sent = []
-    for p in trades.open_positions():
+    for p in trades.open_positions(account_id):
         stop = p.get("stopPrice")
         if not stop:
             continue
@@ -382,7 +382,8 @@ def lambda_handler(event, context):
     _weekly_backtests(today)
     if Config.STORAGE_BACKEND == "sqlite":  # the mock account lives only on SQLite
         try:
-            stop_watch(get_trades_store(), db, telegram, settings, price_of, today)
+            store = get_trades_store()
+            stop_watch(store, db, telegram, settings, price_of, today, default_account_id(store))
         except Exception:
             logger.exception("Stop watch failed")
 

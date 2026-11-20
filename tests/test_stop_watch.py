@@ -17,7 +17,7 @@ class Trades:
     def __init__(self, positions):
         self.positions = positions
 
-    def open_positions(self):
+    def open_positions(self, _account_id=None):
         return self.positions
 
 

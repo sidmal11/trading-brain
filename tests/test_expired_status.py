@@ -110,7 +110,7 @@ def test_approving_an_expired_alert_is_refused(env, monkeypatch, trading_on):
     r = env["client"].post("/api/v1/alerts/a1/review", json={"decision": "APPROVED"})
     assert r.status_code == 409
     assert r.json()["detail"] == "Request expired: Cleared at upgrade."
-    assert env["trades"].list_orders() == []
+    assert env["trades"].list_orders(trading.default_account_id(env["trades"])) == []
     assert env["store"].get_alert("a1")["status"] == "EXPIRED"
 
 
