@@ -24,7 +24,8 @@ def test_messages_use_the_spec_wording():
     assert notify.sold_text(sell, None) == "Sold 2 AAPL at $190.00 (MOCK)."
 
 
-def test_admins_gets_every_admin_chat_and_survives_a_failure():
+def test_the_owner_gets_every_admin_chat_and_a_failure_is_survived(monkeypatch, tmp_path):
+    owner = Env(monkeypatch, tmp_path).owner
     sent = []
 
     class Tg:
@@ -35,7 +36,7 @@ def test_admins_gets_every_admin_chat_and_survives_a_failure():
                 raise RuntimeError("Telegram down")
             sent.append((chat_id, text))
 
-    notify.admins("hello", Tg())
+    notify.to_email(owner, "hello", Tg())
     assert sent == [("2", "hello")]
 
 
@@ -43,7 +44,7 @@ def test_admins_gets_every_admin_chat_and_survives_a_failure():
 def env(monkeypatch, tmp_path):
     e = Env(monkeypatch, tmp_path)
     e.sent = []
-    monkeypatch.setattr(api_main.notify, "admins", lambda text: e.sent.append(text))
+    monkeypatch.setattr(api_main.notify, "to_email", lambda email, text: e.sent.append(text))
     return e
 
 
@@ -81,7 +82,8 @@ def test_close_sends_the_sale_with_profit(env):
 
 
 def test_buy_price_is_the_filled_order_of_that_alert(env):
-    assert api_main._buy_price("a1") is None
+    assert api_main._buy_price("a1", env.acct()) is None
     env.approve()
-    assert api_main._buy_price("a1") == 182.4
-    assert api_main._buy_price("nope") is None
+    assert api_main._buy_price("a1", env.acct()) == 182.4
+    assert api_main._buy_price("nope", env.acct()) is None
+    assert api_main._buy_price("a1", env.acct("b@x.com")) is None   # another account bought nothing

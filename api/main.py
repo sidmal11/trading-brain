@@ -45,7 +45,8 @@ from utils.storage import alert_store, subscriber_store
 from utils.telegram_client import (AMOUNT_PROMPT, AMOUNT_UNREADABLE, TelegramClient, build_confirm_keyboard,
                                    parse_amount_callback, parse_amount_text, parse_callback)
 
-from . import market_source, notify, performance, trading
+from . import accounts, market_source, notify, performance, trading
+from .accounts import account_for, is_owner, request_email
 from .validity import format_qty, quantity_for, suggest_quantity
 from .auth import auth_required, email_otp_enabled, get_otp_service, require_user
 
@@ -199,12 +200,11 @@ def _plain(value):
     return value
 
 
-def _buy_price(alert_id):
-    """The fill price of the alert's filled mock buy, or None (no buy, not filled, or no trades file)."""
-    if not alert_id or settings_store() is None:
+def _buy_price(alert_id, account_id):
+    """The fill price of the alert's filled mock buy in that account, or None (no buy, not filled, or no trades file)."""
+    if not alert_id or account_id is None:
         return None
-    store = trading.get_trades_store()
-    order = store.live_buy(trading.default_account_id(store), alert_id)
+    order = trading.get_trades_store().live_buy(account_id, alert_id)
     return order["fillPrice"] if order and order["status"] == "FILLED" else None
 
 
@@ -266,11 +266,22 @@ def _signal_from_alert(alert):
         "chartData": chart,
         "telegramMessageId": alert.get("telegramMessageId"),
         "priceAtAlert": _plain(alert.get("priceAtAlert")),
-        "buyPrice": _buy_price(alert.get("alertId")),
+        "buyPrice": None,  # the caller's own, filled in by get_signals
         "suggestedShares": suggest_quantity(trading.live_price(snapshot), _plain(alert.get("stopPrice")),
                                             effective_settings()) or None,
         "screenerUrl": f"{Config.STOCK_SCREENER_URL}/stocks/{ticker}",
     }
+
+
+def _as_seen_by(request, alerts):
+    """Each alert with the caller's own status: EXPIRED/INFO, else their decision, else PENDING (off SQLite there is
+    one shared status). The stored row keeps the owner's."""
+    if Config.STORAGE_BACKEND != "sqlite":
+        return alerts
+    from utils.decisions_store import decisions_store, effective_status
+
+    mine = decisions_store().for_email(request_email(request))
+    return [{**a, "status": effective_status(a, mine.get(a.get("alertId")))} for a in alerts]
 
 
 def _gather(items, worker):
@@ -342,18 +353,21 @@ def put_settings(body: SettingsIn):
 
 
 @router.get("/signals")
-def get_signals(limit: int = Query(MAX_ENRICHED_SIGNALS, ge=1, le=MAX_ENRICHED_SIGNALS), db=Depends(get_db)):
-    alerts = db.list_alerts()[:limit]
+def get_signals(request: Request, limit: int = Query(MAX_ENRICHED_SIGNALS, ge=1, le=MAX_ENRICHED_SIGNALS),
+                db=Depends(get_db)):
+    alerts = _as_seen_by(request, db.list_alerts()[:limit])
     signals = _gather(alerts, _safe(_signal_from_alert))
     news = news_client.latest_by_ticker(signal["ticker"] for signal in signals)
-    dates, today = {}, date.fromisoformat(trading_date())
+    dates, today, account_id = {}, date.fromisoformat(trading_date()), None
     if Config.STORAGE_BACKEND == "sqlite":
         from market_data.earnings import EarningsStore
 
         dates = EarningsStore(Config.SQLITE_PATH).get({s["ticker"].upper() for s in signals})
+        account_id = account_for(request_email(request))["id"]
     from market_data.earnings import earnings_note
 
     for signal in signals:
+        signal["buyPrice"] = _buy_price(signal["id"], account_id)  # the caller's own buy
         signal["news"] = news.get(signal["ticker"].upper(), [])
         day = dates.get(signal["ticker"].upper())
         signal["earningsDate"] = day.isoformat() if day else None
@@ -598,8 +612,8 @@ def _on_day(stamp, day):
 
 
 @router.get("/market-overview")
-def get_market_overview(db=Depends(get_db)):
-    alerts = db.list_alerts()
+def get_market_overview(request: Request, db=Depends(get_db)):
+    alerts = _as_seen_by(request, db.list_alerts())
     # The trading day is New York's, so an alert at 9 p.m. ET counts as today, not tomorrow.
     today = datetime.now(MARKET_TZ).date()
 
@@ -621,14 +635,17 @@ def get_market_overview(db=Depends(get_db)):
 
 
 @router.get("/alerts")
-def get_alerts(db=Depends(get_db)):
-    """Return stored rows as-is.
+def get_alerts(request: Request, db=Depends(get_db)):
+    """Return stored rows as-is, except the status, which is the caller's own.
 
     `services/alertContract.ts` already normalises legacy spellings and both
     timestamp formats. Re-shaping here as well would mean two places to change
     whenever the wire format moves.
     """
-    return db.list_alerts()
+    return _as_seen_by(request, db.list_alerts())
+
+
+REOPEN_OWNER_ONLY = "Only the owner can reopen a request."
 
 
 def _worth_telling(reason):
@@ -638,6 +655,7 @@ def _worth_telling(reason):
 
 @router.post("/alerts/{alert_id}/review")
 def review_alert(
+    request: Request,
     background: BackgroundTasks,
     alert_id: str = Path(..., min_length=1),
     body: ReviewRequest = Body(...),
@@ -652,19 +670,23 @@ def review_alert(
     if existing.get("status") == "INFO":  # shown for information; its strategy does not send buy requests
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=trading.INFO_ONLY)
 
+    email = request_email(request)
+    was_approved = trading.decision_of(existing, email) == "APPROVED"
     order = None
     try:
         if body.decision == "APPROVED":
-            order = trading.execute_approval(existing, db, shares=body.shares, dollars=body.dollars)
+            order = trading.execute_approval(existing, db, email, shares=body.shares, dollars=body.dollars)
         elif body.decision == "REJECTED":
-            trading.reject(existing, db)
+            trading.reject(existing, db, email)
+        elif Config.STORAGE_BACKEND == "sqlite" and not is_owner(email):  # PENDING reopens the shared status
+            raise trading.TradeRefused(REOPEN_OWNER_ONLY)
         elif not db.update_alert_status(alert_id, body.decision):
             raise trading.DecisionNotRecorded(alert_id)
     except trading.TradeRefused as refused:
         if body.decision == "APPROVED" and _worth_telling(refused.reason):
             # A raised HTTPException drops queued background tasks, so the 409 carries its own send.
             return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": refused.reason},
-                                background=BackgroundTask(notify.admins,
+                                background=BackgroundTask(notify.to_email, email,
                                                           notify.refused_text(existing.get("ticker", ""), refused.reason)))
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
     except trading.DecisionNotRecorded:
@@ -672,14 +694,14 @@ def review_alert(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not record the decision.",
         )
-    if order is not None and order["status"] == "FILLED" and existing.get("status") != "APPROVED":
-        background.add_task(notify.admins, notify.bought_text(order, existing))  # a repeat approval sends nothing
+    if order is not None and order["status"] == "FILLED" and not was_approved:
+        background.add_task(notify.to_email, email, notify.bought_text(order, existing))  # a repeat sends nothing
 
-    # Mirror the decision onto the Telegram message so the two surfaces agree.
-    # A failure here is logged inside the client and must not fail the request:
-    # the decision is already durably recorded. A buy still in flight elsewhere
-    # has not approved the alert yet, so it is not mirrored.
-    if order is None or order["status"] == "FILLED":
+    # Mirror the owner's decision onto the Telegram message so the two surfaces agree (the message shows the
+    # owner's decision; another user's never edits it). A failure here is logged inside the client and must not
+    # fail the request: the decision is already durably recorded. A buy still in flight elsewhere has not
+    # approved the alert yet, so it is not mirrored.
+    if is_owner(email) and (order is None or order["status"] == "FILLED"):
         TelegramClient().update_message_decision(
             existing.get("telegramMessageId"), existing.get("ticker", ""), body.decision
         )
@@ -688,11 +710,10 @@ def review_alert(
 
 
 @router.get("/orders")
-def get_orders():
+def get_orders(request: Request):
     if Config.STORAGE_BACKEND != "sqlite":  # the trades file lives only beside the SQLite store
         return []
-    store = trading.get_trades_store()
-    return store.list_orders(trading.default_account_id(store))
+    return trading.get_trades_store().list_orders(account_for(request_email(request))["id"])
 
 
 @router.get("/data-quality")
@@ -754,18 +775,43 @@ def get_strategy_performance(strategy_id: str = Path(..., max_length=32)):
 
 
 @router.get("/positions")
-def get_positions():
+def get_positions(request: Request):
     if Config.STORAGE_BACKEND != "sqlite":
         cash = Config.MOCK_STARTING_CASH
         return {"broker": "mock", "startingCash": cash, "cash": cash, "positions": []}
-    return trading.positions_snapshot()
+    return trading.positions_snapshot(request_email(request))
+
+
+class MyAccountIn(BaseModel):
+    approvalsBuy: bool
+
+
+def _my_account(email):
+    from utils.telegram_links import telegram_links
+
+    return {**trading.positions_snapshot(email), "telegramLinked": bool(telegram_links().chats_for_email(email))}
+
+
+@router.get("/me/account")
+def get_my_account(request: Request):
+    _paper_store_only()
+    return _my_account(request_email(request))
+
+
+@router.put("/me/account")
+def put_my_account(request: Request, body: MyAccountIn):
+    """The caller's own switch: do my approvals buy in my account. The owner's switches are on the Access page."""
+    _paper_store_only()
+    email = request_email(request)
+    trading.get_trades_store().update_account(account_for(email)["id"], approvals_buy=body.approvalsBuy)
+    return _my_account(email)
 
 
 @router.get("/performance")
-def get_performance():
+def get_performance(request: Request):
     # limit=-1 is SQLite for "no limit": the report needs every order, not the newest 200
     store = trading.get_trades_store() if Config.STORAGE_BACKEND == "sqlite" else None
-    orders = store.list_orders(trading.default_account_id(store), limit=-1) if store else []
+    orders = store.list_orders(account_for(request_email(request))["id"], limit=-1) if store else []
     alerts = get_db().list_alerts(limit=10**9)
     # Only what the report scores: filled orders and alerts with a price and date.
     needed = [o for o in orders if o["status"] == "FILLED"]
@@ -779,16 +825,18 @@ def get_performance():
 
 
 @router.post("/positions/{ticker}/close")
-def close_position(background: BackgroundTasks, ticker: str = Path(..., min_length=1, max_length=16)):
+def close_position(request: Request, background: BackgroundTasks,
+                   ticker: str = Path(..., min_length=1, max_length=16)):
     if Config.STORAGE_BACKEND != "sqlite":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No open position.")
     ticker = ticker.upper()
+    email = request_email(request)
     try:
         store = trading.get_trades_store()
-        held = next((p for p in store.open_positions(trading.default_account_id(store)) if p["ticker"] == ticker), None)
-        order = trading.close_position(ticker)
+        held = next((p for p in store.open_positions(account_for(email)["id"]) if p["ticker"] == ticker), None)
+        order = trading.close_position(email, ticker)
         if order and order.get("status") == "FILLED":
-            background.add_task(notify.admins, notify.sold_text(order, held["costBasis"] if held else None))
+            background.add_task(notify.to_email, email, notify.sold_text(order, held["costBasis"] if held else None))
         return order
     except LookupError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No open position.")
@@ -830,19 +878,19 @@ def get_quote(ticker: str = Path(..., pattern=TICKER_PATTERN)):
 
 
 @router.post("/paper/buy")
-def paper_buy(body: PaperBuyIn):
+def paper_buy(request: Request, body: PaperBuyIn):
     _paper_store_only()
     try:
-        return trading.manual_buy(body.ticker, shares=body.shares, dollars=body.dollars)
+        return trading.manual_buy(request_email(request), body.ticker, shares=body.shares, dollars=body.dollars)
     except trading.TradeRefused as refused:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
 
 
 @router.post("/paper/reset")
-def paper_reset(body: PaperResetIn):
+def paper_reset(request: Request, body: PaperResetIn):
     _paper_store_only()
     try:
-        return trading.reset_account(body.startingCash)
+        return trading.reset_account(request_email(request), body.startingCash)
     except trading.TradeRefused as refused:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
 
@@ -1044,13 +1092,14 @@ def telegram_webhook(
         return {"ok": True, "alertId": alert_id, "status": "PENDING"}
 
     answer = f"{ticker}: {decision.title()}"
+    email = accounts.owner()  # only admin chats can tap, and they act for the owner
     order = None
     try:
         if decision == "APPROVED":
-            order = trading.execute_approval(existing, db, shares=shares, dollars=dollars)
+            order = trading.execute_approval(existing, db, email, shares=shares, dollars=dollars)
             recorded = True
         else:
-            recorded = trading.reject(existing, db)
+            recorded = trading.reject(existing, db, email)
     except trading.TradeRefused as refused:
         telegram.answer_callback_query(cb_id, refused.reason)
         if refused.reason in (trading.ALREADY_REJECTED, trading.ALREADY_BOUGHT, trading.INFO_ONLY):  # nothing to retry
@@ -1180,8 +1229,11 @@ def create_app() -> FastAPI:
     get_broker(lambda ticker: None)  # refuses any broker other than the mock
     if Config.STORAGE_BACKEND == "sqlite":
         store = trading.get_trades_store()
-        from .access import owner_email
-        store.migrate_shared(owner_email() or "local-development", Config.MOCK_STARTING_CASH)  # once: shared orders go to the owner
+        store.migrate_shared(accounts.owner(), Config.MOCK_STARTING_CASH)  # once: shared orders go to the owner
+        from utils.decisions_store import decisions_store
+
+        # Idempotent: the owner's existing APPROVED/REJECTED alerts read the same as their own decisions.
+        decisions_store().seed_owner(alert_store().list_alerts(limit=10**9), accounts.owner())
         stranded = store.fail_stranded(0)  # cut off by the stop before this start
         if stranded:
             logger.warning("Marked %d order(s) left PENDING by the last stop as FAILED", stranded)

@@ -3,7 +3,10 @@
 import sys
 from pathlib import Path
 
+import copy
+
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -40,11 +43,13 @@ class Env:
         monkeypatch.setattr(Config, "MOCK_STARTING_CASH", 10000.0)
         monkeypatch.setattr(Config, "ALLOW_UNAUTHENTICATED", True)
         monkeypatch.setattr(Config, "AUTH_MODE", "")
+        monkeypatch.setattr(Config, "OWNER_EMAIL", "owner@x.com")
+        self.owner = self.user = "owner@x.com"  # the default test user is the owner
         monkeypatch.setattr(api_main, "_db_client", None)
         monkeypatch.setattr(api_main, "TelegramClient", _NoopTelegram)
         _NoopTelegram.calls = []
         self.trades = TradesStore(str(tmp_path / "trades.db"))
-        self.acct = lambda: trading.default_account_id(self.trades)
+        self.acct = lambda email=None: self.trades.ensure_account(email or self.owner, Config.MOCK_STARTING_CASH)["id"]
         monkeypatch.setattr(trading, "get_trades_store", lambda: self.trades)
         monkeypatch.setattr(trading, "price_of", lambda ticker: self.price)
         monkeypatch.setattr(trading, "session_fraction", lambda: self.open)
@@ -53,7 +58,43 @@ class Env:
         self.settings.put(SETTINGS)
         self.alerts = SqliteStore(Config.SQLITE_PATH)
         self.save_alert("a1")
-        self.client = TestClient(api_main.create_app())
+        app = api_main.create_app()
+        app.dependency_overrides[api_main.require_user] = self._signed_in
+        self.client = TestClient(app)
+        self.approvals_buy(self.owner)
+
+    def _signed_in(self, request: Request):
+        request.state.user = {"sub": self.user, "email": self.user}
+        return request.state.user
+
+    def as_user(self, email):
+        self.user = email
+        return self
+
+    def approvals_buy(self, email, on=True):
+        self.trades.update_account(self.acct(email), approvals_buy=on)
+
+    def disable(self, email):
+        self.trades.update_account(self.acct(email), enabled=False)
+
+    def reject(self, alert_id="a1"):
+        return self.client.post(f"/api/v1/alerts/{alert_id}/review", json={"decision": "REJECTED"})
+
+    def paper_buy(self, ticker, **amount):
+        return self.client.post("/api/v1/paper/buy", json={"ticker": ticker, **amount})
+
+    def close(self, ticker):
+        return self.client.post(f"/api/v1/positions/{ticker}/close")
+
+    def signals_for(self, email):
+        """{alertId: alertStatus} as `email` sees the signals."""
+        from api import market_source
+        from tests.test_api import QUOTE
+        from utils import news_client
+
+        self.mp.setattr(market_source, "quote", lambda ticker: copy.deepcopy(QUOTE))
+        self.mp.setattr(news_client, "latest_by_ticker", lambda tickers: {})
+        return {s["id"]: s["alertStatus"] for s in self.as_user(email).client.get("/api/v1/signals").json()}
 
     def save_alert(self, alert_id, ticker="AAPL", trading_date=TODAY):
         self.alerts.save_alert(alert_id, ticker, "Volume 3.4x", "Pros\n- x", trading_date=trading_date)
@@ -191,7 +232,7 @@ def test_broker_exception_marks_the_order_failed(env, monkeypatch):
 
     monkeypatch.setattr(trading.MockBroker, "buy", boom)
     with pytest.raises(RuntimeError):
-        trading.execute_approval(env.alerts.get_alert("a1"), env.alerts)
+        trading.execute_approval(env.alerts.get_alert("a1"), env.alerts, env.owner)
     assert [(o["status"], o["reason"]) for o in env.trades.list_orders(env.acct())] == [("FAILED", "Broker error.")]
 
 
@@ -253,7 +294,7 @@ def test_close_broker_exception_marks_the_sell_failed(env, monkeypatch):
 
     monkeypatch.setattr(trading.MockBroker, "sell", boom)
     with pytest.raises(RuntimeError):
-        trading.close_position("AAPL")
+        trading.close_position(env.owner, "AAPL")
     sell = env.trades.list_orders(env.acct())[0]
     assert (sell["side"], sell["status"], sell["reason"]) == ("SELL", "FAILED", "Broker error.")
 
