@@ -28,7 +28,10 @@ class LlmClient:
                 + "\n"
             )
         prompt += (
-            "Provide a concise summary with 'Pros' and 'Cons' for this trade. "
+            "Reply in plain text, no markdown, in exactly this format:\n"
+            "Pros:\n- <short label>: <one sentence>\n(2 to 4 pros)\n"
+            "Cons:\n- <short label>: <one sentence>\n(2 to 4 cons)\n"
+            "Verdict: <one sentence>\n"
             "Keep it under 150 words."
         )
         if strategy_notes:

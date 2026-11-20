@@ -29,3 +29,12 @@ def test_empty_reply_gives_fallback():
     for empty in (None, "", "   "):
         llm, _ = _client(empty)
         assert llm.analyze_stock("AAPL", "s", {}) == FALLBACK
+
+
+def test_asks_for_the_fixed_plain_pros_cons_verdict_format():
+    # Every card parses the same way (api/market_source.split_pros_cons) when every reply has the same shape.
+    llm, create = _client("Pros:\n- a: b\nCons:\n- c: d\nVerdict: e")
+    llm.analyze_stock("AAPL", "s", {})
+    prompt = create.call_args.kwargs["messages"][1]["content"]
+    assert "no markdown" in prompt
+    assert "\nPros:\n- " in prompt and "\nCons:\n- " in prompt and "Verdict:" in prompt

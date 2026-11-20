@@ -96,35 +96,61 @@ def compute_rsi(closes, period=14):
 
 # ── Sentiment parsing ─────────────────────────────────────────────────────────
 
-_BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+", re.MULTILINE)
+_BULLET = re.compile(r"^\s*(?:[-*•–]|\d+[.)])\s+")
+# A heading is a word that looks like one: bold anywhere ("**Pros:**"), or at the start of a line on its own or
+# followed by a colon ("Cons:", "## Bullish"). A bare word inside a sentence ("No bullish MACD cross") is not one.
+_HEADING = re.compile(
+    r"\*\*\s*(pros|cons|bullish|bearish)\s*:?\s*\*\*\s*:?"
+    r"|^[ \t#>*_]*(pros|cons|bullish|bearish)[ \t*_]*(?::|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_INLINE_BULLET = re.compile(r"\s+[-•–]\s+(?=\*\*)")  # "... - **Next point:** ..." on one line
+_VERDICT = re.compile(r"^(overall|in summary|summary|bottom line|verdict|conclusion|in short|net)\b", re.IGNORECASE)
+
+
+def _clean(text):
+    """Plain text: no markdown bold/italic markers or heading hashes, single spaces."""
+    text = re.sub(r"\*\*|__|^#+\s*", "", text.strip())
+    text = re.sub(r"^[*_]+|[*_]+$", "", text.strip())  # an item wrapped in *italics*
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _items(block):
+    """The bullet points of a block, cleaned; empty or punctuation-only fragments are dropped."""
+    out = []
+    for line in block.splitlines():
+        for part in _INLINE_BULLET.split(line):
+            item = _clean(_BULLET.sub("", part))
+            if item and not re.fullmatch(r"[\W_]*", item):
+                out.append(item)
+    return out
 
 
 def split_pros_cons(analysis):
-    """Pull bullish and bearish bullets out of the LLM's prose.
+    """Pull pros and cons bullets out of the LLM's write-up, the same way for every card.
 
-    The model is asked for a Pros/Cons summary but returns free text, so this
-    splits on the headings it actually uses. Anything it cannot parse is left in
-    `summary` rather than being discarded, because an unparsed analysis is still
-    the most useful thing on the card.
+    Returns (pros, cons, summary). The text before the first heading and any closing "Overall ..." line go to
+    `summary`. Anything without both headings is kept whole (cleaned) in `summary` rather than discarded,
+    because an unparsed analysis is still the most useful thing on the card.
     """
     if not analysis:
         return [], [], ""
+    heads = [(m.start(), m.end(), (m.group(1) or m.group(2)).lower()) for m in _HEADING.finditer(analysis)]
+    pro = next((h for h in heads if h[2] in ("pros", "bullish")), None)
+    con = next((h for h in heads if h[2] in ("cons", "bearish")), None)
+    if pro is None or con is None:
+        return [], [], _clean(analysis)
 
-    lowered = analysis.lower()
-    pros_at = max(lowered.find("pros"), lowered.find("bullish"))
-    cons_at = max(lowered.find("cons"), lowered.find("bearish"))
-
-    if pros_at == -1 or cons_at == -1 or cons_at <= pros_at:
-        return [], [], analysis.strip()
-
-    pros_block = analysis[pros_at:cons_at]
-    cons_block = analysis[cons_at:]
-
-    def bullets(block):
-        lines = [_BULLET.sub("", line).strip() for line in block.splitlines()[1:]]
-        return [line for line in lines if line]
-
-    return bullets(pros_block), bullets(cons_block), analysis[:pros_at].strip()
+    first, second = sorted([pro, con])
+    blocks = {first[2]: analysis[first[1]:second[0]], second[2]: analysis[second[1]:]}
+    pros = _items(blocks[pro[2]])
+    cons = _items(blocks[con[2]])
+    summary = [_clean(analysis[:first[0]])]
+    # A closing verdict is neither a pro nor a con: it moves to the summary (it is usually the last item).
+    for side in (pros, cons):
+        while side and _VERDICT.match(side[-1]):
+            summary.append(side.pop())
+    return pros, cons, " ".join(x for x in summary if x)
 
 
 def _sentiment(pros, cons):

@@ -171,3 +171,37 @@ def test_futures_rows_are_reused_for_a_minute_and_failures_retried(monkeypatch):
     assert market_source.futures_contract("BAD=F", "x", "y") is None
     assert market_source.futures_contract("BAD=F", "x", "y") is None
     assert calls == ["ES=F", "BAD=F", "BAD=F"]  # one Yahoo call for ES=F; the failure is retried
+
+
+# ── Real LLM shapes (markdown) that used to break the split ─────────────────
+
+def test_markdown_write_up_with_a_bare_bullish_inside_a_con_still_splits():
+    # "No bullish MACD cross" once moved the split point into the cons, and the card showed one grey paragraph.
+    text = ("**Pros**  \n- **Strong up-trend:** Price is well above the 200-day SMA.  \n- **Unusual volume:** 3x average.\n"
+            "**Cons**  \n- **MACD weakness:** No bullish MACD cross in the past three days.  \n"
+            "- **Risk:** The stop is 15% below entry.\n*Overall, the momentum and risk undermine the trade.*")
+    pros, cons, summary = split_pros_cons(text)
+    assert pros == ["Strong up-trend: Price is well above the 200-day SMA.", "Unusual volume: 3x average."]
+    assert cons == ["MACD weakness: No bullish MACD cross in the past three days.", "Risk: The stop is 15% below entry."]
+    assert summary == "Overall, the momentum and risk undermine the trade."
+
+
+def test_words_containing_pros_or_cons_are_not_headings():
+    pros, cons, _ = split_pros_cons("Pros:\n- Tight consolidation before the move\n- Good prospects\nCons:\n- Thin float")
+    assert pros == ["Tight consolidation before the move", "Good prospects"]
+    assert cons == ["Thin float"]
+
+
+def test_bullets_run_together_on_one_line_and_empty_fragments_are_dropped():
+    pros, cons, _ = split_pros_cons("**Pros** - **Trend:** up - **Volume:** high\n**\n**Cons** - **MACD:** flat")
+    assert pros == ["Trend: up", "Volume: high"]
+    assert cons == ["MACD: flat"]
+
+
+def test_cons_listed_first_and_a_bottom_line_verdict():
+    pros, cons, summary = split_pros_cons("Cons:\n- Weak trend\nPros:\n- Volume spike\nBottom line: wait for a cross.")
+    assert (pros, cons, summary) == (["Volume spike"], ["Weak trend"], "Bottom line: wait for a cross.")
+
+
+def test_an_unparsed_write_up_loses_its_markdown_markers():
+    assert split_pros_cons("**Note:** the model skipped the headings.") == ([], [], "Note: the model skipped the headings.")
