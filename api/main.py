@@ -330,7 +330,13 @@ def get_settings():
     }
 
 
-@router.put("/settings")
+def require_settings_owner(user=Depends(require_user)):
+    """Settings and universe are shared: only the owner saves them. Without sign-in (local development) it passes."""
+    if auth_required() and accounts.caller_email(user) != accounts.owner():
+        raise HTTPException(status_code=403, detail="Only the owner can change settings.")
+
+
+@router.put("/settings", dependencies=[Depends(require_settings_owner)])
 def put_settings(body: SettingsIn):
     from utils.settings_store import settings_store
 
@@ -458,7 +464,7 @@ def get_universe():
     return {"items": items, "persistent": store is not None}
 
 
-@router.put("/universe")
+@router.put("/universe", dependencies=[Depends(require_settings_owner)])
 def put_universe(body: UniverseIn):
     from utils.universe import universe_store
 
@@ -980,10 +986,25 @@ class AllowedEmailIn(BaseModel):
 access_router = APIRouter(prefix="/api/v1/allowed-emails")
 
 
+def _account_summary(email):
+    from utils.telegram_links import telegram_links
+
+    store = trading.get_trades_store()
+    account = account_for(email)  # an allowed email has an account by design: create it on read
+    return {
+        "enabled": account["enabled"],
+        "startingCash": account["startingCash"],
+        "cash": store.cash(account["id"]),
+        "openPositions": len(store.open_positions(account["id"])),
+        "telegramLinked": bool(telegram_links().chats_for_email(email)),
+    }
+
+
 def _access_list():
     from .access import access_store, owner_email
 
-    return {"owner": owner_email(), "emails": access_store().list()}
+    emails = [{**e, "account": _account_summary(e["email"])} for e in access_store().list()]
+    return {"owner": owner_email(), "emails": emails}
 
 
 @access_router.get("")
@@ -1005,11 +1026,36 @@ def add_allowed_email(body: AllowedEmailIn, owner: str = Depends(require_owner))
 @access_router.delete("/{email}")
 def remove_allowed_email(email: str = Path(..., max_length=254), owner: str = Depends(require_owner)):
     from .access import access_store, normalise, owner_email
+    from utils.telegram_links import telegram_links
 
     if normalise(email) == owner_email():
         raise HTTPException(status_code=409, detail="The owner cannot be removed.")
     access_store().remove(email)
+    # Orders are kept; the person just stops trading and getting Telegram messages.
+    trading.get_trades_store().update_account(account_for(email)["id"], enabled=False)
+    telegram_links().unlink_email(normalise(email))
     return _access_list()
+
+
+class AccountIn(BaseModel):
+    enabled: bool | None = None
+    startingCash: float | None = Field(default=None, ge=100, le=10_000_000)
+
+
+@access_router.put("/{email}/account")
+def update_allowed_account(body: AccountIn, email: str = Path(..., max_length=254), owner: str = Depends(require_owner)):
+    from .access import access_store, normalise
+
+    email = normalise(email)
+    if email not in [e["email"] for e in access_store().list()]:
+        raise HTTPException(status_code=404, detail="Not found.")
+    store = trading.get_trades_store()
+    account = account_for(email)
+    if body.enabled is not None:
+        store.update_account(account["id"], enabled=body.enabled)
+    if body.startingCash is not None and not store.reset(account["id"], body.startingCash):
+        raise HTTPException(status_code=409, detail="An order is still being placed. Try again in a moment.")
+    return _account_summary(email)
 
 
 # ── Telegram webhook ──────────────────────────────────────────────────────────
