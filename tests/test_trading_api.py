@@ -431,3 +431,66 @@ def test_an_info_alert_cannot_be_approved_or_rejected(env):
         r = env.client.post("/api/v1/alerts/i1/review", json={"decision": decision})
         assert r.status_code == 409 and r.json()["detail"] == "Information only: this strategy does not send buy requests."
     assert env.status("i1") == "INFO" and env.client.get("/api/v1/orders").json() == []
+
+
+# ── Paper Trading ─────────────────────────────────────────────────────────────
+
+def paper_buy(env, **body):
+    return env.client.post("/api/v1/paper/buy", json=body)
+
+
+def test_paper_buy_by_dollars_or_shares_fills_at_the_quote_without_an_alert(env):
+    r = paper_buy(env, ticker="msft", dollars=1000)
+    assert r.status_code == 200
+    order = r.json()
+    assert (order["ticker"], order["status"], order["fillPrice"], order["strategy"]) == ("MSFT", "FILLED", 182.4, "manual")
+    assert order["alertId"] is None and order["quantity"] == 5.482456   # $1000 / $182.40, rounded down
+    # A second buy of the same ticker adds to the position (no one-position rule for hand trades).
+    assert paper_buy(env, ticker="MSFT", shares=2).json()["quantity"] == 2
+    account = env.client.get("/api/v1/positions").json()
+    [position] = account["positions"]
+    assert position["quantity"] == 7.482456
+    assert account["cash"] == round(10000 - 7.482456 * 182.4, 2)
+
+
+def test_paper_buys_do_not_use_up_the_daily_limit_for_approvals(env):
+    env.set(maxOrdersPerDay=1)
+    assert paper_buy(env, ticker="MSFT", dollars=100).status_code == 200
+    assert env.approve().status_code == 200   # the system's one buy for the day is still free
+
+
+def test_paper_buy_refusals(env):
+    r = paper_buy(env, ticker="MSFT", dollars=20000)
+    assert r.status_code == 409 and r.json()["detail"] == "Not enough mock cash."
+    env.price = None
+    r = paper_buy(env, ticker="NOPE", dollars=100)
+    assert r.status_code == 409 and r.json()["detail"] == "Price unavailable."
+    assert env.client.get("/api/v1/orders").json() == []   # a refusal before the claim leaves no order behind
+    for bad in ({"ticker": "MSFT"}, {"ticker": "MSFT", "dollars": 10, "shares": 1}, {"ticker": "MS FT", "dollars": 10},
+                {"ticker": "MSFT", "dollars": -5}):
+        assert paper_buy(env, **bad).status_code == 422
+
+
+def test_reset_archives_orders_and_starts_over_with_the_new_balance(env):
+    assert paper_buy(env, ticker="MSFT", dollars=1000).status_code == 200
+    r = env.client.post("/api/v1/paper/reset", json={"startingCash": 25000})
+    assert r.status_code == 200
+    assert (r.json()["startingCash"], r.json()["cash"], r.json()["positions"]) == (25000, 25000, [])
+    assert env.client.get("/api/v1/orders").json() == []
+    import sqlite3
+    with sqlite3.connect(env.trades.path) as conn:   # nothing is lost: the old orders are archived
+        assert conn.execute("SELECT ticker, strategy FROM orders_archive").fetchall() == [("MSFT", "manual")]
+    assert env.client.post("/api/v1/paper/reset", json={"startingCash": 5}).status_code == 422
+
+
+def test_reset_is_refused_while_an_order_is_in_flight(env):
+    env.trades.claim_manual_buy("MSFT", 1, TODAY)   # PENDING
+    r = env.client.post("/api/v1/paper/reset", json={"startingCash": 10000})
+    assert r.status_code == 409 and "still being placed" in r.json()["detail"]
+    assert len(env.client.get("/api/v1/orders").json()) == 1
+
+
+def test_quote_route(env):
+    assert env.client.get("/api/v1/quote/aapl").json() == {"ticker": "AAPL", "price": 182.4}
+    env.price = None
+    assert env.client.get("/api/v1/quote/AAPL").status_code == 404

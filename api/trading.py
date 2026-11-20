@@ -71,11 +71,15 @@ def _buy_refusal(alert, today, store, settings, price, quantity):
         return f"Already holding {ticker}."
     if store.filled_buys_on(today) >= settings["maxOrdersPerDay"]:
         return f"Daily order limit reached ({settings['maxOrdersPerDay']})."
+    return _cash_refusal(store, price, quantity)
+
+
+def _cash_refusal(store, price, quantity):
     if not price or price <= 0:
         return "Price unavailable."
     if round(quantity * price, 2) < 1:  # cents: $1 at an awkward price must not fall a hair short
         return "Minimum order is $1."
-    if store.cash(Config.MOCK_STARTING_CASH) < quantity * price:
+    if store.cash(store.starting_cash(Config.MOCK_STARTING_CASH)) < quantity * price:
         return "Not enough mock cash."
     return None
 
@@ -165,6 +169,27 @@ def close_position(ticker):
     return _settle(store, order, lambda broker: broker.sell(ticker, order["quantity"], order["id"]), price)
 
 
+def manual_buy(ticker, shares=None, dollars=None):
+    """Paper Trading: buy any ticker by hand at the live price, in the same mock account. Any hour (fills at the
+    latest quote, pre/post-market when closed); no daily cap and no one-position rule: those govern the system."""
+    ticker = ticker.upper()
+    price = price_of(ticker)  # before the claim: no slow work between claim and fill/fail
+    quantity = quantity_for(price, shares, dollars, 0) if price and price > 0 else 0
+    store = get_trades_store()
+    reason = _cash_refusal(store, price, quantity)
+    if reason:
+        raise TradeRefused(reason)
+    order = store.claim_manual_buy(ticker, quantity, trading_date())
+    return _settle(store, order, lambda broker: broker.buy(ticker, quantity, order["id"]), price)
+
+
+def reset_account(starting_cash):
+    """Archive every order and start the mock account over with `starting_cash`."""
+    if not get_trades_store().reset(starting_cash):
+        raise TradeRefused("An order is still being placed. Try again in a moment.")
+    return positions_snapshot()
+
+
 def positions_snapshot():
     store = get_trades_store()
     positions = []
@@ -185,7 +210,7 @@ def positions_snapshot():
         })
     return {
         "broker": MockBroker.name,
-        "startingCash": Config.MOCK_STARTING_CASH,
-        "cash": store.cash(Config.MOCK_STARTING_CASH),
+        "startingCash": store.starting_cash(Config.MOCK_STARTING_CASH),
+        "cash": store.cash(store.starting_cash(Config.MOCK_STARTING_CASH)),
         "positions": positions,
     }

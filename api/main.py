@@ -792,6 +792,57 @@ def close_position(background: BackgroundTasks, ticker: str = Path(..., min_leng
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
 
 
+# ── Paper Trading: hand-placed trades and a reset, all in the same mock account ──
+
+class PaperBuyIn(BaseModel):
+    ticker: str = Field(pattern=TICKER_PATTERN)
+    # Exactly one amount; finite and capped like ReviewRequest.
+    shares: float | None = Field(None, gt=0, le=1_000_000, allow_inf_nan=False)
+    dollars: float | None = Field(None, gt=0, le=10_000_000, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def exactly_one_amount(self):
+        if (self.shares is None) == (self.dollars is None):
+            raise ValueError("send shares or dollars")
+        return self
+
+
+class PaperResetIn(BaseModel):
+    startingCash: float = Field(ge=100, le=10_000_000, allow_inf_nan=False)
+
+
+def _paper_store_only():
+    if Config.STORAGE_BACKEND != "sqlite":  # the trades file lives only beside the SQLite store
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper trading needs the SQLite store.")
+
+
+@router.get("/quote/{ticker}")
+def get_quote(ticker: str = Path(..., pattern=TICKER_PATTERN)):
+    """The live price a paper trade would fill at (pre/post-market when the session is closed)."""
+    price = trading.price_of(ticker.upper())
+    if price is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No price for that ticker.")
+    return {"ticker": ticker.upper(), "price": price}
+
+
+@router.post("/paper/buy")
+def paper_buy(body: PaperBuyIn):
+    _paper_store_only()
+    try:
+        return trading.manual_buy(body.ticker, shares=body.shares, dollars=body.dollars)
+    except trading.TradeRefused as refused:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
+
+
+@router.post("/paper/reset")
+def paper_reset(body: PaperResetIn):
+    _paper_store_only()
+    try:
+        return trading.reset_account(body.startingCash)
+    except trading.TradeRefused as refused:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
+
+
 # ── Email login (AUTH_MODE=email_otp) ─────────────────────────────────────────
 # No require_user here: these routes are how a session is created.
 

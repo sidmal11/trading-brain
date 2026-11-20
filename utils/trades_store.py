@@ -5,6 +5,8 @@ row is the single source of truth. Close always sells the whole position, so a
 ticker's open lots are its FILLED buys newer (by id) than its latest FILLED sell.
 The partial unique index allows one live (non-FAILED) buy per alert, which is what
 makes a double approval place one order while a refused one can be retried.
+Paper trading adds manual buys (strategy 'manual', no alert) and a reset that archives
+every order into orders_archive and sets a new starting balance (the meta table).
 """
 
 import sqlite3
@@ -19,6 +21,7 @@ _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM orders"
 
 
 STRANDED_SECONDS = 120
+MANUAL = "manual"  # strategy of a buy placed by hand on the Paper Trading page
 STRANDED_REASON = "Interrupted: the server stopped before this order finished."
 
 
@@ -42,6 +45,7 @@ class TradesStore:
                 "CREATE UNIQUE INDEX IF NOT EXISTS one_live_buy_per_alert ON orders(alert_id) "
                 "WHERE side = 'BUY' AND status != 'FAILED'"
             )
+            conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
 
     def _connect(self):
         return sqlite3.connect(self.path, timeout=10)
@@ -90,6 +94,12 @@ class TradesStore:
                 if existing:
                     return existing, False
                 # The conflicting buy was marked FAILED in between: retry the insert once.
+
+    def claim_manual_buy(self, ticker, quantity, trading_date):
+        """Insert a PENDING hand-placed buy (no alert, so the one-buy-per-alert index never applies)."""
+        with self._lock, self._connect() as conn:
+            self._fail_stranded(conn)
+            return self._insert(conn, None, ticker, "BUY", quantity, trading_date, MANUAL, None, None)
 
     def live_buy(self, alert_id):
         """The alert's buy that is pending or filled, or None. Read only: the dashboard calls it on every poll."""
@@ -140,8 +150,10 @@ class TradesStore:
     def filled_buys_on(self, trading_date):
         with self._connect() as conn:
             return conn.execute(
-                "SELECT COUNT(*) FROM orders WHERE side = 'BUY' AND status = 'FILLED' AND trading_date = ?",
-                (trading_date,),
+                # The daily cap is on the system's buys; hand-placed paper trades do not use it up.
+                "SELECT COUNT(*) FROM orders WHERE side = 'BUY' AND status = 'FILLED' AND trading_date = ? "
+                "AND (strategy IS NULL OR strategy != ?)",
+                (trading_date, MANUAL),
             ).fetchone()[0]
 
     def _filled(self):
@@ -176,6 +188,29 @@ class TradesStore:
                               "costBasis": cost,
                               "stopPrice": newest["stopPrice"], "targetPrice": newest["targetPrice"]})
         return positions
+
+    def starting_cash(self, default):
+        """The balance the account started (or was last reset) with; `default` until the first reset."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'starting_cash'").fetchone()
+        return float(row[0]) if row else float(default)
+
+    def reset(self, starting_cash):
+        """Start over: archive every order and set a new starting balance. Returns False, changing
+        nothing, while an order is in flight (it would fill into the new account)."""
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fail_stranded(conn)
+            if conn.execute("SELECT 1 FROM orders WHERE status = 'PENDING'").fetchone():
+                return False
+            cols = ", ".join(_COLUMNS)
+            conn.execute(f"CREATE TABLE IF NOT EXISTS orders_archive AS SELECT {cols}, '' AS reset_at FROM orders WHERE 0")
+            conn.execute(f"INSERT INTO orders_archive ({cols}, reset_at) SELECT {cols}, ? FROM orders",
+                         (datetime.now(timezone.utc).isoformat(),))
+            conn.execute("DELETE FROM orders")
+            conn.execute("INSERT INTO meta (key, value) VALUES ('starting_cash', ?) "
+                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(float(starting_cash)),))
+            return True
 
     def cash(self, starting_cash):
         flow = sum(o["quantity"] * o["fillPrice"] * (-1 if o["side"] == "BUY" else 1) for o in self._filled())
