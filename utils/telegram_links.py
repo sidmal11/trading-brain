@@ -38,11 +38,12 @@ class TelegramLinks:
     def redeem(self, code: str, chat_id: str, now: float | None = None) -> str | None:
         """The email the code belongs to, or None if unknown, expired or already used. A code is spent either way."""
         now = time.time() if now is None else now
+        # Claim first: one DELETE takes the row, so only one of any number of concurrent redeems gets it back.
         with self._lock, self._connect() as conn:
-            row = conn.execute("SELECT email, expires_at FROM telegram_link_codes WHERE code = ?", (code,)).fetchone()
+            row = conn.execute("DELETE FROM telegram_link_codes WHERE code = ? RETURNING email, expires_at",
+                               (code,)).fetchone()
             if row is None:
                 return None
-            conn.execute("DELETE FROM telegram_link_codes WHERE code = ?", (code,))
             email, expires_at = row
             if now >= expires_at:
                 return None
