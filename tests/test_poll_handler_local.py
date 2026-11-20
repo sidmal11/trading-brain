@@ -135,6 +135,41 @@ def test_poll_sends_admin_copy_with_buttons_and_subscriber_copy_without(poll):
     assert to_sub and "reply_markup" not in to_sub[0]
 
 
+@pytest.fixture
+def poll_env(poll):
+    """The poll with linked chats: buttons for linked users whose account is on, a plain copy for everyone else."""
+    from types import SimpleNamespace
+
+    from api.trading import get_trades_store
+    from utils.telegram_links import telegram_links
+
+    subscriber_store().deactivate(SUB)
+    links = telegram_links()
+    store = get_trades_store()
+
+    def alert_copies(with_buttons):
+        return {str(p["chat_id"]) for p in poll.sends() if "NVDA" in p["text"] and bool(p.get("reply_markup")) == with_buttons}
+
+    return SimpleNamespace(
+        admin_chat=ADMIN,
+        link_chat=lambda chat_id, email: links.redeem(links.new_code(email), chat_id),
+        disable=lambda email: store.update_account(store.ensure_account(email, Config.MOCK_STARTING_CASH)["id"],
+                                                   enabled=False),
+        subscribe=lambda chat_id: subscriber_store().subscribe(chat_id),
+        run_poll_with_one_requestable_alert=lambda: lambda_function.lambda_handler({}, None),
+        sent_with_buttons=lambda: alert_copies(True),
+        sent_plain=lambda: alert_copies(False),
+    )
+
+
+def test_poll_sends_buttons_to_linked_enabled_users_only(poll_env):
+    poll_env.link_chat("555", "b@x.com"); poll_env.link_chat("666", "c@x.com"); poll_env.disable("c@x.com")
+    poll_env.subscribe("777")
+    poll_env.run_poll_with_one_requestable_alert()
+    assert poll_env.sent_with_buttons() == {poll_env.admin_chat, "555"}
+    assert poll_env.sent_plain() == {"666", "777"}
+
+
 def test_poll_with_no_scan_results_sends_nothing(poll, monkeypatch):
     monkeypatch.setattr(FakeScan, "get_market_scan_results", lambda self, **k: [])
     result = lambda_function.lambda_handler({}, None)

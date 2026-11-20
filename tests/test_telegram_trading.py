@@ -287,3 +287,98 @@ def test_subscriber_pause_changes_nothing(tg):
     _say(tg, "/pause", chat_id="99")
     assert len(tg.http.calls) == before
     assert tg.client.get("/api/v1/settings").json()["tradingEnabled"] is True
+
+
+# ── Per-user Telegram requests (per-user accounts task 6) ─────────────────────
+
+@pytest.fixture
+def env(tg):
+    from utils.telegram_links import telegram_links
+
+    tg.alert_id = "a1"
+    tg.last_answer = None
+
+    def link_chat(chat_id, email):
+        links = telegram_links()
+        assert links.redeem(links.new_code(email), chat_id) == email
+
+    def tap(chat_id, data, message_id=7):
+        if data.split(":")[0] in ("approve", "reject") and data.count(":") == 1:
+            data += ":AAPL"  # the real buttons carry the ticker, and the parser rightly refuses one without it
+        r = tg.client.post("/api/v1/telegram/webhook", headers=HEADERS, json={"callback_query": {
+            "id": "cb", "data": data, "from": {"id": int(chat_id)},
+            "message": {"message_id": message_id, "chat": {"id": int(chat_id)}},
+        }})
+        answers = _answers(tg.http)
+        tg.last_answer = answers[-1] if answers else None
+        return r
+
+    def last_text(chat_id):
+        texts = [p["text"] for m, p in tg.http.calls if m == "sendMessage" and str(p["chat_id"]) == str(chat_id)]
+        return texts[-1] if texts else None
+
+    tg.link_chat = link_chat
+    tg.tap = tap
+    tg.start = lambda chat_id, payload: _say(tg, f"/start {payload}", chat_id=chat_id)
+    tg.last_text = last_text
+    tg.account_orders = lambda email: tg.trades.list_orders(tg.acct(email))
+    tg.no_orders = lambda: not any(tg.trades.list_orders(a["id"]) for a in tg.trades.list_accounts())
+    return tg
+
+
+def test_a_linked_users_tap_buys_in_their_own_account(env):
+    env.link_chat("555", "b@x.com"); env.approvals_buy("b@x.com"); env.set(tradingEnabled=True)
+    env.tap("555", f"approve:{env.alert_id}")
+    assert env.account_orders("b@x.com") and not env.account_orders(env.owner)
+
+
+def test_an_unlinked_tap_is_refused_politely(env):
+    env.tap("999", f"approve:{env.alert_id}")
+    assert env.last_answer == "Link this chat from the dashboard first." and env.no_orders()
+
+
+def test_start_with_an_expired_code_links_nothing(env):
+    env.start("777", "link_bogus")
+    assert env.last_text("777") == "That link has expired. Make a new one from the dashboard."
+
+
+def test_start_with_a_code_links_the_chat_and_says_so(env, monkeypatch):
+    monkeypatch.setattr(tc.TelegramClient, "bot_username", lambda self: "tb_bot")
+    env.as_user("b@x.com")
+    url = env.client.post("/api/v1/me/telegram-link").json()["url"]
+    assert url.startswith("https://t.me/tb_bot?start=link_")
+    env.start("555", url.split("start=")[1])
+    assert env.last_text("555") == "Linked to b@x.com. Buy requests will come here (MOCK)."
+    assert env.client.get("/api/v1/me/account").json()["telegramLinked"] is True
+    env.client.delete("/api/v1/me/telegram-link")
+    assert env.client.get("/api/v1/me/account").json()["telegramLinked"] is False
+    env.tap("555", f"approve:{env.alert_id}")
+    assert env.last_answer == "Link this chat from the dashboard first."
+
+
+def test_link_route_without_a_bot_username_is_503(env):
+    r = env.client.post("/api/v1/me/telegram-link")
+    assert r.status_code == 503 and r.json()["detail"] == "Telegram is not set up."
+
+
+def test_a_linked_users_decision_is_their_own_and_edits_only_their_chat(env):
+    env.link_chat("555", "b@x.com")
+    env.tap("555", f"reject:{env.alert_id}")
+    assert env.last_answer == "AAPL: Rejected"
+    assert env.status() == "PENDING"  # only the owner's decision sets the global status
+    edits = [p for m, p in env.http.calls if m == "editMessageReplyMarkup"]
+    assert edits and all(str(p["chat_id"]) == "555" for p in edits)
+
+
+def test_a_linked_user_can_type_another_amount(env):
+    env.link_chat("555", "b@x.com"); env.approvals_buy("b@x.com")
+    env.tap("555", f"ba:{env.alert_id}")
+    _say(env, "$10", chat_id="555")
+    assert env.last_text("555").startswith("Buy ") and env.last_text("555").endswith("(MOCK)?")
+
+
+def test_a_linked_email_no_longer_allowed_is_refused(env, monkeypatch):
+    env.link_chat("555", "gone@x.com")
+    monkeypatch.setattr(Config, "AUTH_MODE", "email_otp")  # the access list applies; gone@x.com is not on it
+    env.tap("555", f"approve:{env.alert_id}")
+    assert env.last_answer == "Link this chat from the dashboard first." and env.no_orders()

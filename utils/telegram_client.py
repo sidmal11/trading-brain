@@ -223,16 +223,17 @@ class TelegramClient:
         admins.update(c.strip() for c in Config.ADMIN_CHAT_IDS.split(",") if c.strip())
         return admins
 
-    def _alert_payload(self, chat_id, ticker, signal_details, analysis, alert_id, order_line=None, keyboard=None):
+    def _alert_payload(self, chat_id, ticker, signal_details, analysis, alert_id, order_line=None, keyboard=None,
+                       button_chat_ids=None):
         payload = {
             "chat_id": chat_id,
             "text": self.format_alert(ticker, signal_details, analysis),
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
-        # Buttons only for admins: a decision is the operator's, so a subscriber's
-        # tap must never reach the decision path.
-        if alert_id and str(chat_id) in self.admin_chat_ids:
+        # Buttons only for chats that may decide (admins by default, plus linked users the poll names);
+        # a plain subscriber's tap must never reach the decision path.
+        if alert_id and str(chat_id) in (self.admin_chat_ids if button_chat_ids is None else button_chat_ids):
             payload["reply_markup"] = keyboard or build_approval_keyboard(alert_id, ticker)
             if order_line:
                 payload["text"] = self.format_alert(ticker, signal_details, analysis, f"\n\n{escape(order_line)}")
@@ -267,7 +268,8 @@ class TelegramClient:
 
         return data.get("result", {}).get("message_id")
 
-    def broadcast_alert(self, ticker, signal_details, analysis, alert_id, chat_ids, order_line=None, keyboard=None):
+    def broadcast_alert(self, ticker, signal_details, analysis, alert_id, chat_ids, order_line=None, keyboard=None,
+                        button_chat_ids=None):
         """Send one alert to every subscriber.
 
         Returns `(admin_message_id, blocked, sent)`. `admin_message_id` is the id of
@@ -275,6 +277,7 @@ class TelegramClient:
         `blocked` lists the chats that returned 403 (the user blocked the bot), so
         the caller can stop sending to them. `sent` is every delivered copy as
         `{"chatId", "messageId", "sentAt"}`, so an expired request can be cleaned out.
+        Only chats in `button_chat_ids` (default: the admin chats) get the buttons and the order line.
         """
         if not self.is_configured:
             logger.warning("Telegram not configured; skipping broadcast for %s", ticker)
@@ -284,7 +287,8 @@ class TelegramClient:
         blocked = []
         sent = []
         for chat_id in chat_ids:
-            payload = self._alert_payload(chat_id, ticker, signal_details, analysis, alert_id, order_line, keyboard)
+            payload = self._alert_payload(chat_id, ticker, signal_details, analysis, alert_id, order_line, keyboard,
+                                          button_chat_ids)
             data = self._post("sendMessage", payload)
             if data and data.get("ok"):
                 message_id = data.get("result", {}).get("message_id")

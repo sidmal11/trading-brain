@@ -261,7 +261,7 @@ def _invalid_tickers(today):
 
 
 def _request_extras(settings, alert_id, ticker, price, stop):
-    """(order line, keyboard) for the admin copy: the suggested buy and the amount buttons.
+    """(order line, keyboard) for the copies with buttons: the suggested buy and the amount buttons.
 
     (None, None) when trading is off or there is no usable price: the message then keeps Approve/Reject.
     """
@@ -316,6 +316,22 @@ def expire_sweep(db, telegram, settings, price_of, alerts=None):
             for chat_id in sorted(telegram.admin_chat_ids):
                 telegram.send_text(chat_id, note)
     return expired
+
+
+def _linked_chats():
+    """(every linked chat, those whose account is enabled). Links and accounts live only on SQLite."""
+    if Config.STORAGE_BACKEND != "sqlite":
+        return [], set()
+    from utils.telegram_links import telegram_links
+
+    links = telegram_links()
+    chats, enabled = [], set()
+    for email in sorted(links.linked_emails()):
+        own = links.chats_for_email(email)
+        chats += own
+        if accounts.account_for(email)["enabled"]:
+            enabled.update(own)
+    return chats, enabled
 
 
 def owner_account(trades):
@@ -443,14 +459,16 @@ def lambda_handler(event, context):
         # buttons' callback_data, and a tap that carries no id cannot be matched
         # back to a row when the decision comes in.
         alert_id = str(uuid.uuid4())
-        # Admins always get the alert (with buttons); every active subscriber gets
-        # it too. Admins come first so the stored message id is the admin copy.
+        # Admins and linked users whose account is on get the alert with buttons; other linked users and
+        # every active subscriber get a plain copy. Admins come first so the stored message id is the admin copy.
         message_id, sent = None, []
         if requestable and settings["telegramAlertsEnabled"]:  # dashboard-only strategies never reach Telegram
-            recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + subscribers.active_chat_ids()))
+            linked, enabled = _linked_chats()
+            recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + linked + subscribers.active_chat_ids()))
             order_line, keyboard = _request_extras(settings, alert_id, ticker, price, sig.get("stopPrice"))
             message_id, blocked, sent = telegram.broadcast_alert(
-                ticker, conditions, analysis, alert_id, recipients, order_line, keyboard
+                ticker, conditions, analysis, alert_id, recipients, order_line, keyboard,
+                button_chat_ids=telegram.admin_chat_ids | enabled,
             )
             for chat_id in blocked:
                 subscribers.deactivate(chat_id)

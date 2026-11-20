@@ -814,6 +814,28 @@ def put_my_account(request: Request, body: MyAccountIn):
     return _my_account(email)
 
 
+@router.post("/me/telegram-link")
+def create_telegram_link(request: Request):
+    """A one-time deep link that links the Telegram chat opening it to the caller's email (10 minutes, single use)."""
+    from utils.telegram_links import telegram_links
+
+    _paper_store_only()
+    bot = TelegramClient().bot_username()
+    if not bot:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Telegram is not set up.")
+    return {"url": f"https://t.me/{bot}?start=link_{telegram_links().new_code(request_email(request))}"}
+
+
+@router.delete("/me/telegram-link")
+def delete_telegram_link(request: Request):
+    from utils.telegram_links import telegram_links
+
+    _paper_store_only()
+    email = request_email(request)
+    telegram_links().unlink_email(email)
+    return _my_account(email)
+
+
 @router.get("/performance")
 def get_performance(request: Request):
     # limit=-1 is SQLite for "no limit": the report needs every order, not the newest 200
@@ -1097,10 +1119,11 @@ def telegram_webhook(
 
     telegram = TelegramClient()
     tapper = str((callback.get("from") or {}).get("id", ""))
-    if tapper not in telegram.admin_chat_ids:
+    email = _chat_email(tapper, telegram)  # every decision and buy below is this email's own
+    if email is None:
         # Subscribers get alerts without buttons; this is a guard for a stale or forwarded copy.
-        telegram.answer_callback_query(callback.get("id", ""), "Only the operator can decide.")
-        return {"ok": True, "ignored": "tap from non-admin"}
+        telegram.answer_callback_query(callback.get("id", ""), "Link this chat from the dashboard first.")
+        return {"ok": True, "ignored": "tap from an unlinked chat"}
 
     data = callback.get("data", "")
     parsed = parse_callback(data)
@@ -1139,7 +1162,6 @@ def telegram_webhook(
         return {"ok": True, "alertId": alert_id, "status": "PENDING"}
 
     answer = f"{ticker}: {decision.title()}"
-    email = accounts.owner()  # only admin chats can tap, and they act for the owner
     order = None
     try:
         if decision == "APPROVED":
@@ -1177,24 +1199,51 @@ def telegram_webhook(
             answer = f"Already bought {format_qty(order['quantity'])} {ticker} (MOCK)"  # a repeat tap: one buy, one message
         elif order is not None:
             answer = f"Bought {format_qty(order['quantity'])} {ticker} (MOCK)"
-            telegram.send_text(chat_id, notify.bought_text(order, existing))
+            notify.to_email(email, notify.bought_text(order, existing), telegram)
         telegram.answer_callback_query(cb_id, answer)
         telegram.update_message_decision(tapped.get("message_id"), ticker, decision, chat_id=chat_id)
-        stored = existing.get("telegramMessageId")
-        if stored and str(stored) != str(tapped.get("message_id")):
-            # A Confirm tap sits on its own message; stamp the original request too.
-            telegram.update_message_decision(stored, ticker, decision, chat_id=existing.get("telegramChatId") or chat_id)
+        for message_id in _request_copies_in(existing, chat_id):
+            if str(message_id) != str(tapped.get("message_id")):
+                # A Confirm tap sits on its own message; stamp this chat's copy of the request too.
+                telegram.update_message_decision(message_id, ticker, decision, chat_id=chat_id)
 
     return {"ok": True, "alertId": alert_id, "status": decision}
 
 
+def _chat_email(chat_id, telegram):
+    """The email a Telegram chat acts for: the owner for the admin chats, else the email it is linked to, or None."""
+    from utils.telegram_links import owner_aware_email, telegram_links
+
+    if str(chat_id) in telegram.admin_chat_ids:
+        return accounts.owner()  # also when OWNER_EMAIL is unset (local development), as before links
+    if Config.STORAGE_BACKEND != "sqlite":  # the links table lives only in the SQLite file
+        return None
+    email = owner_aware_email(telegram_links(), chat_id, telegram.admin_chat_ids)
+    return email if email and _still_allowed(email) else None
+
+
+def _still_allowed(email):
+    """Removal from the access list already unlinks; this also covers a code redeemed after the removal."""
+    from .access import is_allowed
+
+    return not email_otp_enabled() or is_allowed(email)
+
+
+def _request_copies_in(alert, chat_id):
+    """Message ids of the alert's request copies in this chat (older alerts stored only the admin copy)."""
+    copies = [c["messageId"] for c in alert.get("telegramMessages") or [] if str(c.get("chatId")) == str(chat_id)]
+    if not copies and alert.get("telegramMessageId") and str(alert.get("telegramChatId")) == str(chat_id):
+        copies = [alert["telegramMessageId"]]
+    return copies
+
+
 def _handle_amount_reply(message, text, db):
-    """An admin's typed amount after "Other amount": reply with a confirm step, an error, or nothing."""
+    """A typed amount after "Other amount" from a chat that may decide: a confirm step, an error, or nothing."""
     chat = message.get("chat") or {}
     chat_id = str(chat.get("id", ""))
     telegram = TelegramClient()
-    if chat.get("type") != "private" or chat_id not in telegram.admin_chat_ids:
-        return {"ok": True, "ignored": "text from a non-admin chat"}
+    if chat.get("type") != "private" or _chat_email(chat_id, telegram) is None:
+        return {"ok": True, "ignored": "text from a chat that cannot decide"}
     alert_id = db.get_prompt(chat_id)
     if not alert_id:
         return {"ok": True, "ignored": "no amount was asked for"}
@@ -1229,6 +1278,7 @@ _WELCOME = (
     "Send /stop to unsubscribe."
 )
 _GOODBYE = "You will no longer receive alerts. Send /start to subscribe again."
+_LINK_EXPIRED = "That link has expired. Make a new one from the dashboard."
 
 
 def _handle_command(message, subscribers):
@@ -1241,6 +1291,22 @@ def _handle_command(message, subscribers):
     words = (message.get("text") or "").strip().split()
     command = words[0].lower() if words else ""
     telegram = TelegramClient()
+
+    if command == "/start" and len(words) > 1 and words[1].startswith("link_"):
+        email = None
+        if Config.STORAGE_BACKEND == "sqlite":  # codes and links live only in the SQLite file
+            from utils.telegram_links import telegram_links
+
+            links = telegram_links()
+            email = links.redeem(words[1][len("link_"):], chat_id)
+            if email and not _still_allowed(email):
+                links.unlink_email(email)
+                email = None
+        if email is None:
+            telegram.send_text(chat_id, _LINK_EXPIRED)
+            return {"ok": True, "ignored": "link code not valid"}
+        telegram.send_text(chat_id, f"Linked to {email}. Buy requests will come here (MOCK).")
+        return {"ok": True, "linked": chat_id}
 
     if command == "/start":
         if subscribers.subscribe(chat_id, username=chat.get("username"), first_name=chat.get("first_name")):
