@@ -332,6 +332,7 @@ def get_settings():
 
 def require_settings_owner(user=Depends(require_user)):
     """Settings and universe are shared: only the owner saves them. Without sign-in (local development) it passes."""
+    # Fail closed: in Cognito mode only a token whose email claim equals OWNER_EMAIL may change settings.
     if auth_required() and accounts.caller_email(user) != accounts.owner():
         raise HTTPException(status_code=403, detail="Only the owner can change settings.")
 
@@ -1053,7 +1054,7 @@ def update_allowed_account(body: AccountIn, email: str = Path(..., max_length=25
     account = account_for(email)
     if body.enabled is not None:
         store.update_account(account["id"], enabled=body.enabled)
-    if body.startingCash is not None and not store.reset(account["id"], body.startingCash):
+    if body.startingCash is not None and body.startingCash != account["startingCash"] and not store.reset(account["id"], body.startingCash):
         raise HTTPException(status_code=409, detail="An order is still being placed. Try again in a moment.")
     return _account_summary(email)
 

@@ -167,3 +167,29 @@ def test_only_the_owner_saves_settings_and_universe(env):
         r = friend.put(f"/api/v1/{path}", json=GOOD if path == "settings" else {"items": []})
         assert r.status_code == 403 and r.json()["detail"] == "Only the owner can change settings."
     assert env["client"].put("/api/v1/settings", json=GOOD).status_code == 200
+
+
+def test_resending_the_same_starting_cash_keeps_orders(owner_client, trades):
+    b = trades.ensure_account(B, 10000)
+    o = trades.claim_manual_buy(b["id"], "MSFT", 1, "2026-11-20")
+    trades.fill(o["id"], 100.0)
+    r = owner_client.put(f"/api/v1/allowed-emails/{B}/account", json={"enabled": False, "startingCash": b["startingCash"]})
+    assert r.status_code == 200 and r.json()["enabled"] is False
+    assert len(trades.list_orders(b["id"])) == 1
+
+
+@pytest.mark.parametrize("email, code", [(ALLOWED, 200), ("other@example.com", 403)])
+def test_cognito_mode_only_the_owner_token_saves_settings(monkeypatch, tmp_path, email, code):
+    from api import auth as auth_module
+    from tests.test_settings import GOOD
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setattr(Config, "AUTH_MODE", "")
+    monkeypatch.setattr(Config, "OWNER_EMAIL", ALLOWED)
+    monkeypatch.setattr(Config, "STORAGE_BACKEND", "sqlite")
+    monkeypatch.setattr(Config, "SQLITE_PATH", str(tmp_path / "c.db"))
+    monkeypatch.setattr(auth_module, "COGNITO_USER_POOL_ID", "pool")
+    monkeypatch.setattr(auth_module, "verify_token", lambda credentials: {"sub": "s", "email": email})
+    monkeypatch.setattr(api_main, "_db_client", None)
+    monkeypatch.setattr(api_main, "_subscriber_store", None)
+    r = TestClient(api_main.create_app()).put("/api/v1/settings", json=GOOD, headers={"Authorization": "Bearer t"})
+    assert r.status_code == code
