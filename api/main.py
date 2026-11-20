@@ -1162,6 +1162,7 @@ def telegram_webhook(
         return {"ok": True, "alertId": alert_id, "status": "PENDING"}
 
     answer = f"{ticker}: {decision.title()}"
+    was_approved = trading.decision_of(existing, email) == "APPROVED"  # the tapper's own, not the owner's status
     order = None
     try:
         if decision == "APPROVED":
@@ -1195,7 +1196,7 @@ def telegram_webhook(
         telegram.answer_callback_query(cb_id, f"{ticker}: order in progress.")
     else:
         db.clear_prompt(chat_id)
-        if order is not None and existing.get("status") == "APPROVED":
+        if order is not None and was_approved:
             answer = f"Already bought {format_qty(order['quantity'])} {ticker} (MOCK)"  # a repeat tap: one buy, one message
         elif order is not None:
             answer = f"Bought {format_qty(order['quantity'])} {ticker} (MOCK)"
@@ -1279,6 +1280,7 @@ _WELCOME = (
 )
 _GOODBYE = "You will no longer receive alerts. Send /start to subscribe again."
 _LINK_EXPIRED = "That link has expired. Make a new one from the dashboard."
+_ADMIN_NOT_LINKABLE = "This chat is the owner's admin chat and cannot be linked to another account."
 
 
 def _handle_command(message, subscribers):
@@ -1293,6 +1295,9 @@ def _handle_command(message, subscribers):
     telegram = TelegramClient()
 
     if command == "/start" and len(words) > 1 and words[1].startswith("link_"):
+        if chat_id in telegram.admin_chat_ids:  # the owner's chat: the code is not spent, so it still works elsewhere
+            telegram.send_text(chat_id, _ADMIN_NOT_LINKABLE)
+            return {"ok": True, "ignored": "admin chat cannot be linked"}
         email = None
         if Config.STORAGE_BACKEND == "sqlite":  # codes and links live only in the SQLite file
             from utils.telegram_links import telegram_links

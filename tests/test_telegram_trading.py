@@ -382,3 +382,32 @@ def test_a_linked_email_no_longer_allowed_is_refused(env, monkeypatch):
     monkeypatch.setattr(Config, "AUTH_MODE", "email_otp")  # the access list applies; gone@x.com is not on it
     env.tap("555", f"approve:{env.alert_id}")
     assert env.last_answer == "Link this chat from the dashboard first." and env.no_orders()
+
+
+def test_a_users_first_buy_after_the_owners_approval_is_reported_as_bought(env):
+    env.link_chat("555", "b@x.com"); env.approvals_buy("b@x.com")
+    env.tap(ADMIN, f"approve:{env.alert_id}")  # the owner approves first: the global status is APPROVED
+    env.tap("555", f"approve:{env.alert_id}")
+    assert env.last_answer.startswith("Bought ") and env.account_orders("b@x.com")
+    assert env.last_text("555").startswith("Bought ")  # B's confirmation reaches B's chat
+
+
+def test_a_users_repeat_tap_confirms_once_while_the_owner_is_pending(env):
+    env.link_chat("555", "b@x.com"); env.approvals_buy("b@x.com")
+    env.tap("555", f"approve:{env.alert_id}")
+    env.tap("555", f"approve:{env.alert_id}")
+    assert env.status() == "PENDING"
+    assert env.last_answer.startswith("Already bought ")
+    sent = [p["text"] for m, p in env.http.calls if m == "sendMessage" and str(p["chat_id"]) == "555"]
+    assert sum(t.startswith("Bought ") for t in sent) == 1
+
+
+def test_an_admin_chat_cannot_be_linked_to_another_email(env):
+    from utils.telegram_links import telegram_links
+
+    code = telegram_links().new_code("b@x.com")
+    env.start(ADMIN, f"link_{code}")
+    assert env.last_text(ADMIN) == "This chat is the owner's admin chat and cannot be linked to another account."
+    assert telegram_links().chats_for_email("b@x.com") == []
+    env.start("555", f"link_{code}")  # the code was not spent
+    assert telegram_links().chats_for_email("b@x.com") == ["555"]
