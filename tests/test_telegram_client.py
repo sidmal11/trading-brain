@@ -234,3 +234,21 @@ def test_parse_amount_callback(data, expected):
 ])
 def test_parse_amount_text(text, expected):
     assert tc.parse_amount_text(text) == expected
+
+
+def test_bot_username_is_fetched_once_and_failures_are_not_cached(monkeypatch):
+    from utils import telegram_client as tc
+    monkeypatch.setattr(tc, "_BOT_USERNAME", None)
+    client = TelegramClient(token="t", chat_id="1")
+    calls = []
+
+    def fake_post(method, payload):
+        calls.append(method)
+        return {"ok": True, "result": {"username": "trade_bot"}} if len(calls) > 1 else None
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    assert client.bot_username() is None           # failure: not cached
+    assert client.bot_username() == "trade_bot"    # retried, then cached
+    assert client.bot_username() == "trade_bot"
+    assert calls == ["getMe", "getMe"]
+    assert TelegramClient(token="", chat_id="1").bot_username() is None  # unconfigured, even with a cache

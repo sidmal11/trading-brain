@@ -28,6 +28,8 @@ API_BASE = "https://api.telegram.org"
 
 # Telegram rejects a sendMessage body over 4096 characters outright, so the LLM
 # analysis is truncated rather than risking the whole alert being dropped.
+_BOT_USERNAME: str | None = None  # bot_username() cache, one lookup per process
+
 MAX_MESSAGE_CHARS = 4096
 _TRUNCATION_NOTE = "\n\n<i>(analysis truncated)</i>"
 
@@ -172,6 +174,17 @@ class TelegramClient:
     @property
     def is_configured(self) -> bool:
         return bool(self.token and self.chat_id)
+
+    def bot_username(self) -> str | None:
+        """The bot's @username from getMe, cached for the process; a failure is not cached, so it is retried."""
+        global _BOT_USERNAME
+        if not self.token:
+            return None
+        if _BOT_USERNAME is None:
+            data = self._post("getMe", {})
+            if data and data.get("ok"):
+                _BOT_USERNAME = data.get("result", {}).get("username") or None
+        return _BOT_USERNAME
 
     def _post(self, method: str, payload: dict):
         url = f"{API_BASE}/bot{self.token}/{method}"
