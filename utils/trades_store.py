@@ -76,12 +76,13 @@ class TradesStore:
 
     # ── accounts ──────────────────────────────────────────────────────────────
 
-    def ensure_account(self, email, default_cash, kind="mock"):
-        """The account for (email, kind), created with trading on, Telegram approvals off and `default_cash`."""
+    def ensure_account(self, email, default_cash, kind="mock", approvals_buy=False):
+        """The account for (email, kind), created with trading on, `approvals_buy` and `default_cash`.
+        An existing account is returned unchanged."""
         email = email.strip().lower()
         with self._lock, self._connect() as conn:
-            conn.execute("INSERT OR IGNORE INTO accounts (email, kind, starting_cash) VALUES (?, ?, ?)",
-                         (email, kind, float(default_cash)))
+            conn.execute("INSERT OR IGNORE INTO accounts (email, kind, starting_cash, approvals_buy) "
+                         "VALUES (?, ?, ?, ?)", (email, kind, float(default_cash), int(approvals_buy)))
             return _account(conn.execute(f"{_ACCOUNT_SELECT} WHERE email = ? AND kind = ?", (email, kind)).fetchone())
 
     def get_account(self, email, kind="mock"):
@@ -101,14 +102,16 @@ class TradesStore:
                 conn.execute("UPDATE accounts SET approvals_buy = ? WHERE id = ?", (int(approvals_buy), account_id))
             return _account(conn.execute(f"{_ACCOUNT_SELECT} WHERE id = ?", (account_id,)).fetchone())
 
-    def migrate_shared(self, owner_email, default_cash):
+    def migrate_shared(self, owner_email, default_cash, approvals_buy=False):
         """Once, at start-up: give the earlier shared account's orders (and its reset balance) to the owner's
-        account. Rows already assigned are left alone, so a second call assigns nothing."""
+        account. Rows already assigned are left alone, so a second call assigns nothing. A newly created owner
+        account gets `approvals_buy` (the caller passes the global tradingEnabled, so approvals keep buying after
+        the deploy); an existing account's switch is never changed."""
         email = owner_email.strip().lower()
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("INSERT OR IGNORE INTO accounts (email, kind, starting_cash) VALUES (?, 'mock', ?)",
-                         (email, float(default_cash)))
+            conn.execute("INSERT OR IGNORE INTO accounts (email, kind, starting_cash, approvals_buy) "
+                         "VALUES (?, 'mock', ?, ?)", (email, float(default_cash), int(approvals_buy)))
             owner = conn.execute("SELECT id FROM accounts WHERE email = ? AND kind = 'mock'", (email,)).fetchone()[0]
             assigned = conn.execute("UPDATE orders SET account_id = ? WHERE account_id IS NULL", (owner,)).rowcount
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'orders_archive'").fetchone():

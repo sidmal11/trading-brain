@@ -44,15 +44,14 @@ def to_email(email, text, telegram=None):
     from .accounts import is_owner
 
     telegram = telegram or TelegramClient()
+    chats = set(telegram.admin_chat_ids) if is_owner(email) else set()  # outside the try: a links failure keeps them
     try:
-        chats = set(telegram.admin_chat_ids) if is_owner(email) else set()
         if Config.STORAGE_BACKEND == "sqlite":  # the links table lives only in the SQLite file
             from utils.telegram_links import telegram_links
 
             chats |= set(telegram_links().chats_for_email(email))
     except Exception:
         logger.exception("Telegram confirmation recipients could not be read")
-        return
     for chat_id in sorted(chats):
         try:
             telegram.send_text(chat_id, text)

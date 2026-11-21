@@ -93,7 +93,7 @@ def test_reset_and_close_touch_only_the_callers_account(env):
     env.as_user("a@x.com").paper_buy("MSFT", dollars=100)
     env.as_user("b@x.com").paper_buy("MSFT", dollars=100)
     assert env.as_user("b@x.com").close("MSFT").status_code == 200
-    assert env.as_user("b@x.com").client.post("/api/v1/paper/reset", json={"startingCash": 500}).status_code == 200
+    assert env.as_user("b@x.com").client.post("/api/v1/paper/reset", json={}).status_code == 200
     [position] = env.as_user("a@x.com").client.get("/api/v1/positions").json()["positions"]
     assert position["ticker"] == "MSFT"
     assert len(env.as_user("a@x.com").client.get("/api/v1/orders").json()) == 1
@@ -101,7 +101,7 @@ def test_reset_and_close_touch_only_the_callers_account(env):
 
 def test_disabled_account_cannot_reset_and_its_approvals_only_record(env):
     env.approvals_buy("a@x.com"); env.disable("a@x.com")
-    r = env.as_user("a@x.com").client.post("/api/v1/paper/reset", json={"startingCash": 500})
+    r = env.as_user("a@x.com").client.post("/api/v1/paper/reset", json={})
     assert r.status_code == 409 and r.json()["detail"] == OFF
     r = env.as_user("a@x.com").approve()
     assert r.status_code == 200 and r.json()["order"] is None
@@ -165,3 +165,56 @@ def test_the_approval_queue_shows_each_users_own_status(env):
     overview = lambda email: env.as_user(email).client.get("/api/v1/market-overview").json()["pendingApprovalsCount"]
     env.mp.setattr(api_main.market_source, "index_quote", lambda symbol: None)
     assert (overview("b@x.com"), overview(env.owner)) == (0, 1)
+
+
+# -- Final review fixes --
+
+def test_owner_approval_buys_after_deploy_when_trading_was_on(monkeypatch, tmp_path):
+    from tests.test_trading_api import Env as _Env
+
+    env = _Env(monkeypatch, tmp_path, preset_owner=False)  # no switch set by hand: the migration created it
+    r = env.approve()
+    assert r.status_code == 200 and r.json()["order"]["status"] == "FILLED"
+
+
+def test_non_owner_start_over_uses_the_owner_set_starting_cash(env):
+    env.as_user("a@x.com").paper_buy("MSFT", dollars=100)
+    r = env.as_user("a@x.com").client.post("/api/v1/paper/reset", json={"startingCash": 50000})
+    assert r.status_code == 403 and r.json()["detail"] == "Only the owner can change your starting cash."
+    r = env.as_user("a@x.com").client.post("/api/v1/paper/reset", json={})
+    assert r.status_code == 200 and (r.json()["cash"], r.json()["startingCash"]) == (10000.0, 10000.0)
+    assert env.as_user("a@x.com").client.post("/api/v1/paper/reset", json={"startingCash": 10000}).status_code == 200
+
+
+def test_owner_start_over_may_choose_the_amount(env):
+    r = env.as_user(env.owner).client.post("/api/v1/paper/reset", json={"startingCash": 25000})
+    assert r.status_code == 200 and r.json()["startingCash"] == 25000
+
+
+def test_approval_after_turning_the_switch_on_buys_and_confirms(env, monkeypatch):
+    sent = []
+    monkeypatch.setattr(api_main.notify, "to_email", lambda email, text: sent.append((email, text)))
+    assert env.as_user("a@x.com").approve().json()["order"] is None  # switch off: records only
+    env.approvals_buy("a@x.com")
+    r = env.as_user("a@x.com").approve()
+    assert r.json()["order"]["status"] == "FILLED" and [e for e, _ in sent] == ["a@x.com"]
+
+
+def test_to_email_still_reaches_the_admin_chats_when_links_cannot_be_read(env, monkeypatch):
+    from api import notify
+    from utils import telegram_links
+
+    def broken():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(telegram_links, "telegram_links", broken)
+    sent = []
+
+    class Tg:
+        admin_chat_ids = {"1"}
+
+        def send_text(self, chat_id, text):
+            sent.append(chat_id)
+
+    notify.to_email(env.owner, "hi", Tg())
+    assert sent == ["1"]

@@ -411,3 +411,36 @@ def test_an_admin_chat_cannot_be_linked_to_another_email(env):
     assert telegram_links().chats_for_email("b@x.com") == []
     env.start("555", f"link_{code}")  # the code was not spent
     assert telegram_links().chats_for_email("b@x.com") == ["555"]
+
+
+# -- Final review fixes --
+
+def test_a_linked_user_can_type_an_amount_after_the_owner_rejected(env):
+    env.link_chat("555", "b@x.com"); env.approvals_buy("b@x.com")
+    env.tap(ADMIN, f"reject:{env.alert_id}")
+    env.tap("555", f"ba:{env.alert_id}")
+    _say(env, "$10", chat_id="555")
+    assert env.last_text("555") == "Buy 0.054824 AAPL, about $10.00 (MOCK)?"
+    env.tap("555", f"bc:{env.alert_id}:d10", message_id=8)
+    assert [o["quantity"] for o in env.account_orders("b@x.com")] == [0.054824]
+    assert env.status() == "REJECTED"
+
+
+def test_a_tap_after_turning_the_switch_on_buys_and_says_bought(env):
+    env.link_chat("555", "b@x.com")
+    env.tap("555", f"approve:{env.alert_id}")  # switch off: records only
+    assert env.account_orders("b@x.com") == []
+    env.approvals_buy("b@x.com")
+    env.tap("555", f"approve:{env.alert_id}")
+    assert env.last_answer.startswith("Bought ") and env.last_text("555").startswith("Bought ")
+
+
+def test_a_users_dashboard_decision_stamps_their_own_telegram_copy(env):
+    env.alerts.save_alert("t1", "AAPL", "v", "p", trading_date="2026-11-17", messages=[
+        {"chatId": ADMIN, "messageId": 70, "sentAt": "2026-11-17T15:00:00+00:00"},
+        {"chatId": "555", "messageId": 90, "sentAt": "2026-11-17T15:00:00+00:00"}])
+    env.link_chat("555", "b@x.com")
+    env.http.calls.clear()
+    assert env.as_user("b@x.com").reject("t1").status_code == 200
+    edits = [p for m, p in env.http.calls if m.startswith("editMessage")]
+    assert edits and all((str(p["chat_id"]), p["message_id"]) == ("555", 90) for p in edits)

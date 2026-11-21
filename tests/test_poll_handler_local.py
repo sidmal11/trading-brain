@@ -884,3 +884,27 @@ def test_a_ticker_that_fails_a_gate_gets_no_request(poll, monkeypatch):
                         lambda: {**base, "volumeThreshold": 1.0, "requestStrategies": ["macd", "volume"]})
     lambda_function.lambda_handler({}, None)
     assert all(a["ticker"] != "NVDA" for a in alert_store().list_alerts())
+
+
+def test_amount_buttons_only_for_chats_whose_approval_would_buy(poll, monkeypatch):
+    from api import accounts
+    from api.trading import get_trades_store
+    from utils.telegram_links import telegram_links
+
+    _trading(monkeypatch, True)
+    links = telegram_links()
+    links.redeem(links.new_code("a@x.com"), "3000")
+    links.redeem(links.new_code("b@x.com"), "4000")
+    store = get_trades_store()
+    store.ensure_account(accounts.owner(), 10000)  # the owner's own switch is off
+    store.update_account(store.ensure_account("a@x.com", 10000)["id"], approvals_buy=True)
+    store.ensure_account("b@x.com", 10000)  # enabled, switch off
+    lambda_function.lambda_handler({}, None)
+    first = {}
+    for p in poll.sends():
+        first.setdefault(str(p["chat_id"]), p)
+    assert [d.split(":")[0] for d in _buttons(first["3000"])] == ["bq", "bd", "ba", "reject"]
+    assert "Suggested" in first["3000"]["text"]
+    for chat in (ADMIN, "4000"):
+        assert [d.split(":")[0] for d in _buttons(first[chat])] == ["approve", "reject"]
+        assert "Suggested" not in first[chat]["text"]

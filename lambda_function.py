@@ -318,25 +318,37 @@ def expire_sweep(db, telegram, settings, price_of, alerts=None):
     return expired
 
 
-def _linked_chats():
-    """(every linked chat, those whose account is enabled). Links and accounts live only on SQLite."""
+def _buys(account, settings):
+    """Whether this account's approval would buy: the kill switch, the owner's switch and the user's own."""
+    return bool(settings.get("tradingEnabled") and account["enabled"] and account["approvalsBuy"])
+
+
+def _linked_chats(settings, admin_chat_ids):
+    """(every linked chat, those whose account is enabled, those whose approval would buy, admins included).
+    Links and accounts live only on SQLite; elsewhere nothing is bought, so no chat gets the amount buttons."""
     if Config.STORAGE_BACKEND != "sqlite":
-        return [], set()
+        return [], set(), set()
     from utils.telegram_links import telegram_links
 
     links = telegram_links()
+    buying = set(admin_chat_ids) if _buys(owner_account(get_trades_store(), settings), settings) else set()
     chats, enabled = [], set()
     for email in sorted(links.linked_emails()):
         own = links.chats_for_email(email)
         chats += own
-        if accounts.account_for(email)["enabled"]:
+        account = accounts.account_for(email)
+        if account["enabled"]:
             enabled.update(own)
-    return chats, enabled
+        if _buys(account, settings):
+            buying.update(own)
+    return chats, enabled, buying
 
 
-def owner_account(trades):
-    """The poll acts for the owner (it warns the admin chats), so it watches the owner's mock account."""
-    return trades.ensure_account(accounts.owner(), Config.MOCK_STARTING_CASH)["id"]
+def owner_account(trades, settings):
+    """The poll acts for the owner (it warns the admin chats), so it watches the owner's mock account. Created
+    here first (the poll may start before the API), it inherits tradingEnabled like the API's migration."""
+    return trades.ensure_account(accounts.owner(), Config.MOCK_STARTING_CASH,
+                                 approvals_buy=settings["tradingEnabled"])
 
 
 def stop_watch(trades, notices, telegram, settings, price_of, today, account_id=None):
@@ -405,7 +417,7 @@ def lambda_handler(event, context):
     if Config.STORAGE_BACKEND == "sqlite":  # the mock account lives only on SQLite
         try:
             store = get_trades_store()
-            stop_watch(store, db, telegram, settings, price_of, today, owner_account(store))
+            stop_watch(store, db, telegram, settings, price_of, today, owner_account(store, settings)["id"])
         except Exception:
             logger.exception("Stop watch failed")
 
@@ -459,16 +471,17 @@ def lambda_handler(event, context):
         # buttons' callback_data, and a tap that carries no id cannot be matched
         # back to a row when the decision comes in.
         alert_id = str(uuid.uuid4())
-        # Admins and linked users whose account is on get the alert with buttons; other linked users and
-        # every active subscriber get a plain copy. Admins come first so the stored message id is the admin copy.
+        # Admins and linked users whose account is on get the alert with buttons (the order line and amount
+        # buttons only where an approval would buy); other linked users and every active subscriber get a plain
+        # copy. Admins come first so the stored message id is the admin copy.
         message_id, sent = None, []
         if requestable and settings["telegramAlertsEnabled"]:  # dashboard-only strategies never reach Telegram
-            linked, enabled = _linked_chats()
+            linked, enabled, buying = _linked_chats(settings, telegram.admin_chat_ids)
             recipients = list(dict.fromkeys(sorted(telegram.admin_chat_ids) + linked + subscribers.active_chat_ids()))
             order_line, keyboard = _request_extras(settings, alert_id, ticker, price, sig.get("stopPrice"))
             message_id, blocked, sent = telegram.broadcast_alert(
                 ticker, conditions, analysis, alert_id, recipients, order_line, keyboard,
-                button_chat_ids=telegram.admin_chat_ids | enabled,
+                button_chat_ids=telegram.admin_chat_ids | enabled, amount_chat_ids=buying,
             )
             for chat_id in blocked:
                 subscribers.deactivate(chat_id)

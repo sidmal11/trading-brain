@@ -174,3 +174,21 @@ def test_me_reports_the_signed_in_email(env):
     assert env["client"].get("/api/v1/auth/me").status_code == 401
     _login(env)
     assert env["client"].get("/api/v1/auth/me").json() == {"email": ALLOWED, "owner": True}
+
+
+def test_no_owner_start_assigns_no_shared_orders(env, monkeypatch, tmp_path):
+    import sqlite3
+
+    from tests.test_trades_store import _legacy_file
+    from utils.trades_store import TradesStore
+
+    path = str(tmp_path / "legacy-trades.db")
+    _legacy_file(path)
+    monkeypatch.setattr(Config, "TRADES_SQLITE_PATH", path)
+    monkeypatch.setattr(Config, "OWNER_EMAIL", "")
+    with pytest.raises(RuntimeError, match="needs OWNER_EMAIL"):
+        api_main.create_app()
+    store = TradesStore(path)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT account_id FROM orders").fetchall() == [(None,)]
+    assert store.list_accounts() == []

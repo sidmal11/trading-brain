@@ -305,3 +305,29 @@ def test_migrate_shared_on_a_fresh_file_only_creates_the_owner(tmp_path):
     s = TradesStore(str(tmp_path / "t.db"))
     assert s.migrate_shared("owner@x.com", 10000) == 0
     assert s.get_account("owner@x.com")["startingCash"] == 10000.0
+
+
+def test_migrate_shared_sets_the_switch_only_on_a_new_owner_account(tmp_path):
+    s = TradesStore(str(tmp_path / "t.db"))
+    s.migrate_shared("owner@x.com", 10000, True)
+    assert s.get_account("owner@x.com")["approvalsBuy"] is True
+    other = TradesStore(str(tmp_path / "u.db"))
+    other.ensure_account("owner@x.com", 10000)  # already there with the switch off
+    other.migrate_shared("owner@x.com", 10000, True)
+    assert other.get_account("owner@x.com")["approvalsBuy"] is False
+
+
+def test_a_legacy_file_loses_the_shared_index_and_keeps_one_live_buy_per_account(tmp_path):
+    path = str(tmp_path / "t.db")
+    _legacy_file(path)
+    s = TradesStore(path)
+    with sqlite3.connect(path) as conn:
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+    assert "one_live_buy_per_alert" not in names and "one_live_buy_per_account_alert" in names
+    a, b = s.ensure_account("a@x.com", 10000)["id"], s.ensure_account("b@x.com", 10000)["id"]
+    first, created = s.claim_buy(a, "a1", "AAPL", 1, DAY)
+    assert created
+    again, created = s.claim_buy(a, "a1", "AAPL", 1, DAY)
+    assert not created and again["id"] == first["id"]
+    other, created = s.claim_buy(b, "a1", "AAPL", 1, DAY)  # the legacy row (alert a1, no account) blocks nobody
+    assert created and other["accountId"] == b

@@ -34,7 +34,7 @@ class _NoopTelegram:
 
 
 class Env:
-    def __init__(self, monkeypatch, tmp_path):
+    def __init__(self, monkeypatch, tmp_path, preset_owner=True):
         self.mp = monkeypatch
         self.price = 182.4
         self.open = 0.5
@@ -61,7 +61,8 @@ class Env:
         app = api_main.create_app()
         app.dependency_overrides[api_main.require_user] = self._signed_in
         self.client = TestClient(app)
-        self.approvals_buy(self.owner)
+        if preset_owner:
+            self.approvals_buy(self.owner)
 
     def _signed_in(self, request: Request):
         request.state.user = {"sub": self.user, "email": self.user}

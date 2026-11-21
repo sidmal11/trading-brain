@@ -678,7 +678,7 @@ def review_alert(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=trading.INFO_ONLY)
 
     email = request_email(request)
-    was_approved = trading.decision_of(existing, email) == "APPROVED"
+    repeat = _had_buy(email, alert_id)  # a repeat approval answers with that order and sends nothing
     order = None
     try:
         if body.decision == "APPROVED":
@@ -701,19 +701,35 @@ def review_alert(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Could not record the decision.",
         )
-    if order is not None and order["status"] == "FILLED" and not was_approved:
-        background.add_task(notify.to_email, email, notify.bought_text(order, existing))  # a repeat sends nothing
+    if order is not None and order["status"] == "FILLED" and not repeat:
+        background.add_task(notify.to_email, email, notify.bought_text(order, existing))
 
-    # Mirror the owner's decision onto the Telegram message so the two surfaces agree (the message shows the
-    # owner's decision; another user's never edits it). A failure here is logged inside the client and must not
+    # Mirror the owner's decision onto the Telegram message so the two surfaces agree (the shared message shows the
+    # owner's decision; another user's decision edits only that user's own copies). A failure here is logged inside the client and must not
     # fail the request: the decision is already durably recorded. A buy still in flight elsewhere has not
     # approved the alert yet, so it is not mirrored.
-    if is_owner(email) and (order is None or order["status"] == "FILLED"):
-        TelegramClient().update_message_decision(
-            existing.get("telegramMessageId"), existing.get("ticker", ""), body.decision
-        )
+    if order is None or order["status"] == "FILLED":
+        if is_owner(email):
+            TelegramClient().update_message_decision(
+                existing.get("telegramMessageId"), existing.get("ticker", ""), body.decision
+            )
+        elif Config.STORAGE_BACKEND == "sqlite":  # another user's own copies, so their buttons do not stay live
+            from utils.telegram_links import telegram_links
+
+            telegram = TelegramClient()
+            for chat_id in telegram_links().chats_for_email(email):
+                for message_id in _request_copies_in(existing, chat_id):
+                    telegram.update_message_decision(message_id, existing.get("ticker", ""), body.decision,
+                                                     chat_id=chat_id)
 
     return {"success": True, "alertId": alert_id, "status": body.decision, "order": order}
+
+
+def _had_buy(email, alert_id):
+    """Whether the caller's account already holds a live buy for the alert, before this call."""
+    if Config.STORAGE_BACKEND != "sqlite":  # no trades file: nothing is ever bought
+        return False
+    return trading.get_trades_store().live_buy(account_for(email)["id"], alert_id) is not None
 
 
 @router.get("/orders")
@@ -889,7 +905,11 @@ class PaperBuyIn(BaseModel):
 
 
 class PaperResetIn(BaseModel):
-    startingCash: float = Field(ge=100, le=10_000_000, allow_inf_nan=False)
+    # Only the owner chooses an amount; anyone else starts over with the starting cash the owner set.
+    startingCash: float | None = Field(None, ge=100, le=10_000_000, allow_inf_nan=False)
+
+
+OWNER_SETS_CASH = "Only the owner can change your starting cash."
 
 
 def _paper_store_only():
@@ -918,8 +938,12 @@ def paper_buy(request: Request, body: PaperBuyIn):
 @router.post("/paper/reset")
 def paper_reset(request: Request, body: PaperResetIn):
     _paper_store_only()
+    email = request_email(request)
+    cash = account_for(email)["startingCash"]
+    if body.startingCash is not None and body.startingCash != cash and not is_owner(email):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=OWNER_SETS_CASH)
     try:
-        return trading.reset_account(request_email(request), body.startingCash)
+        return trading.reset_account(email, cash if body.startingCash is None else body.startingCash)
     except trading.TradeRefused as refused:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.reason)
 
@@ -1162,7 +1186,7 @@ def telegram_webhook(
         return {"ok": True, "alertId": alert_id, "status": "PENDING"}
 
     answer = f"{ticker}: {decision.title()}"
-    was_approved = trading.decision_of(existing, email) == "APPROVED"  # the tapper's own, not the owner's status
+    repeat = _had_buy(email, alert_id)  # the tapper's own account, before this tap
     order = None
     try:
         if decision == "APPROVED":
@@ -1196,7 +1220,7 @@ def telegram_webhook(
         telegram.answer_callback_query(cb_id, f"{ticker}: order in progress.")
     else:
         db.clear_prompt(chat_id)
-        if order is not None and was_approved:
+        if order is not None and repeat:
             answer = f"Already bought {format_qty(order['quantity'])} {ticker} (MOCK)"  # a repeat tap: one buy, one message
         elif order is not None:
             answer = f"Bought {format_qty(order['quantity'])} {ticker} (MOCK)"
@@ -1249,7 +1273,8 @@ def _handle_amount_reply(message, text, db):
     if not alert_id:
         return {"ok": True, "ignored": "no amount was asked for"}
     alert = db.get_alert(alert_id)
-    if alert is None or alert.get("status") != "PENDING":
+    # Only EXPIRED and INFO are shared; the caller's own decision is checked by execute_approval on Confirm.
+    if alert is None or alert.get("status") in ("EXPIRED", "INFO"):
         db.clear_prompt(chat_id)
         reason = (alert or {}).get("expiredReason")
         telegram.send_text(chat_id, f"Request expired: {reason}" if reason else "That request is no longer open.")
@@ -1345,16 +1370,6 @@ def _handle_command(message, subscribers):
 
 def create_app() -> FastAPI:
     get_broker(lambda ticker: None)  # refuses any broker other than the mock
-    if Config.STORAGE_BACKEND == "sqlite":
-        store = trading.get_trades_store()
-        store.migrate_shared(accounts.owner(), Config.MOCK_STARTING_CASH)  # once: shared orders go to the owner
-        from utils.decisions_store import decisions_store
-
-        # Idempotent: the owner's existing APPROVED/REJECTED alerts read the same as their own decisions.
-        decisions_store().seed_owner(alert_store().list_alerts(limit=10**9), accounts.owner())
-        stranded = store.fail_stranded(0)  # cut off by the stop before this start
-        if stranded:
-            logger.warning("Marked %d order(s) left PENDING by the last stop as FAILED", stranded)
     # Refuse to start with email login half-configured: a missing secret or an
     # empty allow-list would leave the dashboard open or unable to sign anyone in.
     if email_otp_enabled():
@@ -1371,6 +1386,19 @@ def create_app() -> FastAPI:
             "No login is configured. Set AUTH_MODE=email_otp or COGNITO_USER_POOL_ID, "
             "or ALLOW_UNAUTHENTICATED=true for local development only."
         )
+    # After the auth checks: a half-configured start must not hand the shared history to the wrong email.
+    if Config.STORAGE_BACKEND == "sqlite" and not (email_otp_enabled() and not accounts.owner_email()):
+        store = trading.get_trades_store()
+        # Once: shared orders go to the owner. A newly created owner account inherits tradingEnabled, so the
+        # owner's approvals keep buying after the deploy.
+        store.migrate_shared(accounts.owner(), Config.MOCK_STARTING_CASH, effective_settings()["tradingEnabled"])
+        from utils.decisions_store import decisions_store
+
+        # Idempotent: the owner's existing APPROVED/REJECTED alerts read the same as their own decisions.
+        decisions_store().seed_owner(alert_store().list_alerts(limit=10**9), accounts.owner())
+        stranded = store.fail_stranded(0)  # cut off by the stop before this start
+        if stranded:
+            logger.warning("Marked %d order(s) left PENDING by the last stop as FAILED", stranded)
 
     app = FastAPI(
         title="Trading Brain API",
